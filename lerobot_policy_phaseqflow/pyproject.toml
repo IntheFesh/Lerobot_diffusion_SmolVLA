@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_policy_phaseqflow"
+version = "0.1.0"
+description = "PhaseQFlow policy plug‑in for LeRobot"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."lerobot.policies"]
+phaseqflow = "lerobot_policy_phaseqflow.modeling_phaseqflow:PhaseQFlowPolicy"
+
+# This pyproject defines a third‑party policy plug‑in for LeRobot.  The
+# entry point registers the custom policy under the name "phaseqflow"
+# so that you can invoke it via `lerobot-train --policy.type phaseqflow`.

@@ -1,0 +1,16 @@
+# Additional Python package requirements for PhaseQFlow.
+
+# These packages augment the base LeRobot installation.  They provide
+# utilities for logging, linear algebra, configuration management, and
+# image handling.  You should already have LeRobot installed in your
+# working environment.
+
+wandb
+einops
+opencv-python
+hydra-core
+pyyaml
+tqdm
+numpy
+pandas
+matplotlib

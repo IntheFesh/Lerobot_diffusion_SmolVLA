@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-libero-phaseqflow"
+version = "0.1.0"
+description = "Phase-aware and quality-weighted generative policy for LeRobot LIBERO tasks"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Your Name", email = "you@example.com" }
+]
+license = { text = "Apache-2.0" }
+dependencies = []
+
+# The root package is mostly a container around the third‑party
+# policy plugin.  The actual implementation lives in the
+# `lerobot_policy_phaseqflow` subpackage, which is a separate
+# Python package with its own pyproject.toml.
