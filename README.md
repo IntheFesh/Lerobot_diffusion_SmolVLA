@@ -24,7 +24,7 @@ Key directories:
 | `requirements.txt` | Additional Python packages used in scripts and the policy implementation. |
 | `configs/` | Shell scripts for launching local and cloud training jobs. |
 | `scripts/` | Utilities for inspecting datasets, computing episode lengths, benchmarking latency, exporting checkpoints, and running evaluations. |
-| `docs/` | Project abstracts, CV bullets, personal statement paragraphs, and prompts for automatic repository generation. |
+| `docs/` | Project abstracts, CV bullets.|
 | `lerobot_policy_phaseqflow/` | The Python package implementing the PhaseQFlow policy plug‑in.  See its README for details. |
 
 ## Quickstart (local debugging)
