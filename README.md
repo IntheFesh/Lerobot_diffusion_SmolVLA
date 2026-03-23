@@ -97,12 +97,6 @@ In the `docs/` directory you will find:
 * **Project abstracts** (in Chinese and English) summarizing the
   research contributions of PhaseQFlow.
 * **CV bullet points** describing the project in a concise manner.
-* **Personal statement paragraphs** explaining your research goals and
-  how this project fits into your PhD aspirations.
-* **Agent prompts** for automating repository creation in your IDE.
-
-Use these materials to prepare application documents or to explain
-your work to collaborators.
 
 ## License
 
