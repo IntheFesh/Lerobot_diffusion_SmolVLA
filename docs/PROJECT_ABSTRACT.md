@@ -1,6 +1,6 @@
 # Project Abstract: PhaseQFlow—Phase‑Aware and Quality‑Weighted Generative Imitation Learning for LIBERO
 
-This project builds a simulation‑first research pipeline on the LeRobot and LIBERO benchmarks, designed for PhD applications requiring reproducible, extensible, and engineerable deliverables.  After reproducing the Diffusion Policy imitation baseline, we propose **PhaseQFlow**, a phase‑aware and quality‑weighted generative action‑chunk policy.  PhaseQFlow injects two forms of structured priors into the generative model: discrete progress phases and per‑sample quality weights, enabling more stable training and improved performance on long‑horizon tasks under limited data.
+This project builds a simulation‑first research pipeline on the LeRobot and LIBERO benchmarks.  After reproducing the Diffusion Policy imitation baseline, I propose **PhaseQFlow**, a phase‑aware and quality‑weighted generative action‑chunk policy.  PhaseQFlow injects two forms of structured priors into the generative model: discrete progress phases and per‑sample quality weights, enabling more stable training and improved performance on long‑horizon tasks under limited data.
 
 Key contributions:
 
