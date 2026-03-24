@@ -94,7 +94,7 @@ for details.
 
 In the `docs/` directory you will find:
 
-* **Project abstracts** (in Chinese and English) summarizing the
+* **Project abstracts**  summarizing the
   research contributions of PhaseQFlow.
 * **CV bullet points** describing the project in a concise manner.
 
