@@ -9,7 +9,7 @@ description = "Phase-aware and quality-weighted generative policy for LeRobot LI
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-  { name = "Your Name", email = "you@example.com" }
+  { name = "Yueyi_Lee", email = "lyueyi@ewustl.com" }
 ]
 license = { text = "Apache-2.0" }
 dependencies = []
