@@ -23,19 +23,17 @@ from typing import Any, Dict, List, Optional
 import torch
 
 try:
-    # Import base classes from LeRobot if available
-    from lerobot.processor import Processor  # type: ignore
+    from lerobot.processor import Processor
     from lerobot.processor.converters import (
         convert_images_to_tensor,
         convert_states_to_tensor,
-    )  # type: ignore
+    )
 except Exception:
-    # Fallback base class if LeRobot is not installed
-    class Processor:  # type: ignore
+    class Processor:
         pass
-    def convert_images_to_tensor(x: Any) -> Any:  # type: ignore
+    def convert_images_to_tensor(x: Any) -> Any:
         return x
-    def convert_states_to_tensor(x: Any) -> Any:  # type: ignore
+    def convert_states_to_tensor(x: Any) -> Any:
         return x
 
 
