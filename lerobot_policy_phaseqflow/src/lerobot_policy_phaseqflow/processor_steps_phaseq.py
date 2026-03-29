@@ -2,106 +2,67 @@
 processor_steps_phaseq.py
 =========================
 
-Utilities for online phase/quality computation during step-based inference.it defines functions for computing phase IDs and
-quality weights during online inference.
+Online helpers for skill-phase/value-guided inference.
+
+Changes:
+- Removes time-based compute_phase_id logic.
+- Removes jerk-based quality weighting.
+- Uses bounded deque buffers and incremental statistics.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Deque, Optional
 
 import numpy as np
 
 
-def compute_phase_id(
-    frame_index: int,
-    episode_length: int,
-    num_phases: int,
-) -> int:
-    """
-    Compute discrete phase id from trajectory progress.
-
-    Args:
-        frame_index: Current frame index (>=0).
-        episode_length: Total episode length (>=1).
-        num_phases: Number of phases (>=1).
-
-    Returns:
-        phase_id in [0, num_phases - 1].
-    """
-    if num_phases <= 0:
-        raise ValueError("num_phases must be >= 1")
-    if episode_length <= 0:
-        raise ValueError("episode_length must be >= 1")
-    if frame_index < 0:
-        raise ValueError("frame_index must be >= 0")
-
-    denom = max(episode_length - 1, 1)
-    ratio = frame_index / denom
-    phase_id = int(np.floor(ratio * num_phases))
-    return min(max(phase_id, 0), num_phases - 1)
+def compute_skill_id_from_logits(skill_logits: np.ndarray) -> int:
+    """Return discrete skill token id from skill logits/probabilities."""
+    logits = np.asarray(skill_logits, dtype=float)
+    if logits.ndim != 1:
+        raise ValueError("skill_logits must be a 1D array")
+    return int(np.argmax(logits))
 
 
-def compute_quality_weight_from_actions(
-    actions: np.ndarray,
-    min_weight: float = 0.5,
-    max_weight: float = 1.0,
+def compute_value_weight(
+    q_value: float,
+    beta: float = 2.0,
+    min_weight: float = 1e-3,
 ) -> float:
-    """
-    Compute quality weight from action smoothness (inverse jerk).
-
-    Args:
-        actions: shape (T, A) action sequence.
-        min_weight: lower clamp bound.
-        max_weight: upper clamp bound.
-
-    Returns:
-        quality weight in [min_weight, max_weight].
-    """
-    if min_weight > max_weight:
-        raise ValueError("min_weight must be <= max_weight")
-
-    arr = np.asarray(actions, dtype=float)
-    if arr.ndim < 2 or arr.shape[0] < 3:
-        return float(max_weight)
-
-    first = np.diff(arr, axis=0)
-    second = np.diff(first, axis=0)
-    jerk = np.mean(np.linalg.norm(second, axis=-1))
-    norm = 1.0 / (1.0 + float(jerk))
-    raw = min_weight + (max_weight - min_weight) * norm
-    return float(np.clip(raw, min_weight, max_weight))
+    """Convert critic value into positive sample weight."""
+    weight = float(np.exp(beta * float(q_value)))
+    return float(max(weight, min_weight))
 
 
 @dataclass
-class OnlinePhaseState:
-    """
-    Lightweight helper to maintain online step state.
-    """
-    num_phases: int = 4
-    episode_length: Optional[int] = None
-    min_weight: float = 0.5
-    max_weight: float = 1.0
-    frame_index: int = 0
-    _action_buffer: list[np.ndarray] = field(default_factory=list)
+class OnlineSkillState:
+    """State helper for online inference with bounded history."""
 
-    def reset(self, episode_length: Optional[int] = None) -> None:
-        self.episode_length = episode_length
-        self.frame_index = 0
+    num_skills: int = 16
+    beta: float = 2.0
+    action_buffer_maxlen: int = 128
+    _action_buffer: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=128))
+    _weight_buffer: Deque[float] = field(default_factory=lambda: deque(maxlen=128))
+
+    def __post_init__(self) -> None:
+        self._action_buffer = deque(maxlen=self.action_buffer_maxlen)
+        self._weight_buffer = deque(maxlen=self.action_buffer_maxlen)
+
+    def reset(self) -> None:
         self._action_buffer.clear()
+        self._weight_buffer.clear()
 
-    def step(self, action_t: np.ndarray) -> tuple[int, float]:
-        """
-        Update state with one action and return (phase_id, quality_weight).
-        """
-        self._action_buffer.append(np.asarray(action_t))
-        ep_len = self.episode_length if self.episode_length is not None else max(self.frame_index + 1, 1)
-        phase_id = compute_phase_id(self.frame_index, ep_len, self.num_phases)
+    def step(self, action_t: np.ndarray, skill_logits_t: np.ndarray, q_value_t: float) -> tuple[int, float]:
+        self._action_buffer.append(np.asarray(action_t, dtype=float))
 
-        # Compute quality on recent trajectory.
-        traj = np.stack(self._action_buffer, axis=0)
-        q = compute_quality_weight_from_actions(traj, self.min_weight, self.max_weight)
+        skill_id = compute_skill_id_from_logits(skill_logits_t)
+        raw_weight = compute_value_weight(q_value_t, beta=self.beta)
+        self._weight_buffer.append(raw_weight)
 
-        self.frame_index += 1
-        return phase_id, q
+        # Incremental normalization on bounded window for stable scaling.
+        avg_weight = float(np.mean(self._weight_buffer)) if self._weight_buffer else 1.0
+        norm_weight = raw_weight / max(avg_weight, 1e-6)
+        return skill_id, float(norm_weight)
