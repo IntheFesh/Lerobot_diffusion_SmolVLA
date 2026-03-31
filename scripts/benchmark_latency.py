@@ -3,76 +3,113 @@
 benchmark_latency.py
 ===================
 
-Measure inference latency of a trained policy.  The script loads a
-pretrained policy checkpoint and repeatedly calls its `predict` method
-on dummy inputs to estimate the average execution time per call.  This
-metric is helpful for comparing policies with different architectures.
-
-Example usage::
-
-    python scripts/benchmark_latency.py \
-      --policy.path outputs/train/phaseqflow_smol_local/checkpoints/last/pretrained_model \
-      --n_iters 100
-
-The script reports the average latency in milliseconds.  If the policy
-cannot be loaded, a message is printed instead of an exception.
+Measure inference latency of a trained policy. The script loads a
+pretrained policy checkpoint and repeatedly calls its forward/predict
+path on dummy inputs to estimate average execution time per call.
 """
 
 import argparse
 import time
-from typing import Any
+from typing import Any, Optional
 
-def try_import_lerobot_policy():
+
+def try_import_lerobot_policy() -> Optional[Any]:
+    """Try importing LeRobot's pretrained policy base class."""
     try:
         from lerobot.policies import PreTrainedPolicy  # type: ignore
+
         return PreTrainedPolicy
     except Exception:
         return None
 
-def load_policy(path: str) -> Any:
-    PolicyBase = try_import_lerobot_policy()
-    if PolicyBase is None:
-        print("LeRobot is not installed or unavailable.  Cannot load policy.")
+
+def load_policy(path: str) -> Optional[Any]:
+    """Load a policy from a pretrained checkpoint path."""
+    policy_base = try_import_lerobot_policy()
+    if policy_base is None:
+        print("LeRobot is not installed or unavailable. Cannot load policy.")
         return None
     try:
-        policy = PolicyBase.from_pretrained(path)
-        return policy
-    except Exception as e:
-        print(f"Failed to load policy: {e}")
+        return policy_base.from_pretrained(path)
+    except Exception as exc:
+        print(f"Failed to load policy from '{path}': {exc}")
         return None
 
-def benchmark(policy: Any, n_iters: int) -> None:
+
+def _infer_call(policy: Any, dummy_obs: Any) -> Any:
+    """Try common inference entrypoints in a robust order."""
+    if hasattr(policy, "predict"):
+        return policy.predict(dummy_obs)  # type: ignore[attr-defined]
+    return policy(dummy_obs)
+
+
+def benchmark(policy: Any, n_iters: int) -> int:
+    """Run latency benchmarking and return process-like status code."""
     import numpy as np
-    # Construct dummy observation and history arrays.  The shape should
-    # correspond to what the policy expects; here we make reasonable
-    # assumptions.  Adjust these shapes if they differ for your policy.
+
+    if n_iters <= 0:
+        print("n_iters must be > 0")
+        return 1
+
     dummy_obs = {
         "observation": np.zeros((1, 3, 84, 84), dtype=np.float32),
     }
-    # Warm up
+
     try:
-        policy.reset(1)
+        if hasattr(policy, "reset"):
+            policy.reset(1)
     except Exception:
         pass
-    _ = policy(dummy_obs)
-    times = []
+
+    try:
+        _infer_call(policy, dummy_obs)
+    except Exception as exc:
+        print(f"Warm-up inference failed: {exc}")
+        return 1
+
+    times_ms = []
     for _ in range(n_iters):
         start = time.perf_counter()
-        _ = policy(dummy_obs)
+        _infer_call(policy, dummy_obs)
         end = time.perf_counter()
-        times.append((end - start) * 1000.0)
-    avg_ms = sum(times) / len(times)
-    print(f"Average inference latency: {avg_ms:.3f} ms per call over {n_iters} iterations")
+        times_ms.append((end - start) * 1000.0)
 
-def main() -> None:
+    sorted_times = sorted(times_ms)
+    avg_ms = sum(times_ms) / len(times_ms)
+    p50 = sorted_times[len(sorted_times) // 2]
+    p95 = sorted_times[max(0, int(len(sorted_times) * 0.95) - 1)]
+
+    print(f"Average inference latency: {avg_ms:.3f} ms")
+    print(f"P50 latency: {p50:.3f} ms")
+    print(f"P95 latency: {p95:.3f} ms")
+    print(f"Iterations: {n_iters}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark policy inference latency")
-    parser.add_argument("--policy.path", type=str, required=True, help="Path to pretrained policy directory")
-    parser.add_argument("--n_iters", type=int, default=100, help="Number of iterations")
+
+    parser.add_argument("--policy-path", dest="policy_path", type=str, default=None, help="Path to pretrained policy directory")
+    parser.add_argument("--n-iters", dest="n_iters", type=int, default=100, help="Number of benchmark iterations")
+
+    # Backward-compatible aliases used in old configs/scripts.
+    parser.add_argument("--policy.path", dest="policy_path", type=str, help=argparse.SUPPRESS)
+    parser.add_argument("--n_iters", dest="n_iters", type=int, help=argparse.SUPPRESS)
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
+
+    if not args.policy_path:
+        parser.error("Please provide --policy-path (or legacy --policy.path).")
+
     policy = load_policy(args.policy_path)
     if policy is None:
-        return
-    benchmark(policy, args.n_iters)
+        return 1
+    return benchmark(policy, args.n_iters)
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
