@@ -113,3 +113,18 @@ further fine-tuning in downstream pipelines.
 - Confirm required dataset paths and network access for Hugging Face resources.
 - Start with local configs before cloud configs after any major code change.
 - Keep one run = one output directory to simplify experiment tracking.
+
+
+## 8. End-to-end smoke test (train + eval)
+
+Use the dedicated smoke-test script to run a tiny train/eval cycle:
+
+```bash
+bash scripts/smoke_test_phaseqflow_e2e.sh
+```
+
+Notes:
+- The script auto-falls back to `DEVICE=cpu` if no GPU is detected.
+- It uses tiny defaults (`STEPS=2`, `EVAL_EPISODES=1`) for fast checks.
+- It requires LeRobot training/eval entrypoints (`lerobot-train`/`lerobot-eval` or module equivalents).
+- If your environment blocks network package index access, ensure dependencies are preinstalled.
