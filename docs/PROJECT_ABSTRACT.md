@@ -1,11 +1,59 @@
-# Project Abstract: PhaseQFlow—Phase‑Aware and Quality‑Weighted Generative Imitation Learning for LIBERO
+# Project Abstract: PhaseQFlow for Long-Horizon LIBERO Manipulation
 
-This project builds a simulation‑first research pipeline on the LeRobot and LIBERO benchmarks.  After reproducing the Diffusion Policy imitation baseline, I propose **PhaseQFlow**, a phase‑aware and quality‑weighted generative action‑chunk policy.  PhaseQFlow injects two forms of structured priors into the generative model: discrete progress phases and per‑sample quality weights, enabling more stable training and improved performance on long‑horizon tasks under limited data.
+## Summary
 
-Key contributions:
+This project builds a simulation-first pipeline for embodied policy research on
+LeRobot and LIBERO. Starting from a diffusion-policy reproduction baseline, it
+introduces **PhaseQFlow**, a generative action-chunk policy that combines:
 
-1. **Phase‑Aware Conditioning**: Trajectory progress `(frame_index / episode_length)` is discretized into K phases and embedded via a learnable phase embedding.  The embedding conditions the generative model so that different behaviour modes can emerge for early versus late stages of a task.
-2. **Quality‑Weighted Imitation**: Sample quality weights are computed from action smoothness (jerk).  By scaling the imitation loss with these weights, smoother and more consistent expert segments contribute more to learning, improving convergence in low‑data regimes.
-3. **Flow Matching Objective**: Replacing traditional diffusion denoising with a flow matching / rectified flow target yields faster sampling at inference time and aligns with 2025–2026 trends in generative robotic policies.  The design leaves room for Real‑Time Chunking and streaming inference stacks.
+1. **Phase-aware conditioning** for trajectory progress awareness.
+2. **Quality-weighted imitation learning** for robust low-data training.
+3. **Flow-matching objectives** for efficient generation and scalable inference.
 
-From an engineering perspective, the project conforms to LeRobot’s policy plug‑in and processor pipeline conventions.  It offers turnkey training and evaluation scripts—both for local debugging on the Smol‑LIBERO subset and for full‑scale cloud training.  We report success rate, average reward, and inference latency.  Beyond the main line, we provide a SmolVLA PEFT/LoRA fine‑tuning and a phase prompt/adapter prototype as an extension path toward vision‑language action (VLA) and reinforcement learning.
+The implementation follows LeRobot plugin conventions so the policy can be
+trained and evaluated through standard `lerobot-train` and `lerobot-eval`
+workflows.
+
+## Technical contributions
+
+### 1) Phase-aware conditioning
+
+Trajectory progress is represented as a normalized ratio:
+
+`phase_progress = frame_index / episode_length`
+
+Progress values are discretized into `K` phase bins and embedded with a
+learnable phase embedding table. The model uses this embedding as an additional
+conditioning signal, enabling different behavior modes for early/mid/late task
+stages.
+
+### 2) Quality-weighted imitation learning
+
+Each training sample receives a quality weight derived from motion smoothness
+(e.g., jerk-based metrics). The loss is scaled by this weight so cleaner,
+consistent expert segments contribute more strongly to optimization.
+
+This design aims to improve convergence stability and final success rates,
+especially when demonstrations are limited or heterogeneous.
+
+### 3) Flow matching policy objective
+
+Instead of relying only on diffusion denoising, PhaseQFlow uses a flow-matching
+objective for action-chunk generation. This supports faster and more stable
+sampling at inference time and aligns with recent trends in generative robotics.
+
+## Engineering outcomes
+
+- Reproducible repository structure with local and cloud launch scripts.
+- Clear separation between policy package and experiment operations.
+- Utility scripts for dataset diagnostics, checkpoint export, evaluation, and
+  inference latency benchmarking.
+- Extension path toward SmolVLA LoRA adaptation and future online RL integration.
+
+## Evaluation focus
+
+The project emphasizes practical research metrics:
+
+- Task success rate on LIBERO suites.
+- Average reward and rollout robustness.
+- Inference latency for deployment readiness.

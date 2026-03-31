@@ -1,105 +1,95 @@
 # LeRobot + LIBERO PhaseQFlow
 
-This repository provides a reproducible research template for developing
-generative imitation learning policies on the [LeRobot](https://huggingface.co/docs/lerobot/index) platform.  It
-focuses on LIBERO, a collection of long‑horizon simulation tasks for
-robot manipulation, and introduces **PhaseQFlow**, a phase‑aware and
-quality‑weighted policy that builds on the diffusion and flow matching
-paradigms.
+This repository is a research-and-engineering template for training and evaluating
+**generative imitation learning** policies on
+[LeRobot](https://huggingface.co/docs/lerobot/index), with a focus on
+[LIBERO](https://libero-project.github.io/) long-horizon manipulation tasks.
 
-## Repository overview
+The core contribution is **PhaseQFlow**: a phase-aware, quality-weighted,
+flow-matching policy that extends the LeRobot policy plugin architecture.
+The repository also includes baseline diffusion configuration, SmolVLA LoRA
+fine-tuning examples, and utility scripts for dataset inspection, evaluation,
+latency benchmarking, and checkpoint export.
 
-The project is divided into two parts: a top‑level directory with
-configuration, scripts, documentation, and installation files, and a
-`lerobot_policy_phaseqflow` subpackage containing the actual policy
-implementation.  The policy package registers a new `phaseqflow`
-policy with LeRobot via an entry point so that you can invoke it
-directly from `lerobot-train` and `lerobot-eval`.
+## Project goals
 
-Key directories:
+- Provide a reproducible LeRobot-compatible codebase for LIBERO experiments.
+- Improve long-horizon policy learning with explicit phase conditioning.
+- Improve sample efficiency with quality-weighted imitation learning.
+- Offer practical scripts for local debugging and cloud-scale training.
 
-| Directory/file | Description |
+## Repository structure
+
+| Path | Purpose |
 |---|---|
-| `environment.yml` | Conda environment specification for installing basic dependencies. |
-| `requirements.txt` | Additional Python packages used in scripts and the policy implementation. |
-| `configs/` | Shell scripts for launching local and cloud training jobs. |
-| `scripts/` | Utilities for inspecting datasets, computing episode lengths, benchmarking latency, exporting checkpoints, and running evaluations. |
-| `docs/` | Project abstracts, CV bullets.|
-| `lerobot_policy_phaseqflow/` | The Python package implementing the PhaseQFlow policy plug‑in.  See its README for details. |
+| `configs/local/` | Local launch scripts for quick experiments and debugging. |
+| `configs/cloud/` | Cloud/multi-GPU launch scripts using `accelerate`. |
+| `scripts/` | Utilities for evaluation, dataset analysis, checkpoint export, and latency benchmarking. |
+| `docs/` | Project abstract, CV summary bullets, and operation-focused documentation. |
+| `lerobot_policy_phaseqflow/` | Installable LeRobot policy package implementing PhaseQFlow. |
+| `environment.yml` / `requirements.txt` | Environment and dependency definitions. |
 
-## Quickstart (local debugging)
+## Installation
 
-The following steps assume you already have LeRobot and its
-dependencies installed in your Python environment (e.g. via
-`pip install lerobot`).  If not, install LeRobot according to the
-[official instructions](https://huggingface.co/docs/lerobot/installation).
+> Assumption: you already installed a compatible Python environment and LeRobot.
 
-1. **Create the conda environment** (optional)::
+```bash
+# Optional: create conda environment
+conda env create -f environment.yml
+conda activate lerobot_env
 
-   ```bash
-   conda env create -f environment.yml
-   conda activate lerobot_env
-   ```
+# Install Python dependencies
+pip install -r requirements.txt
 
-2. **Install requirements and the PhaseQFlow policy**::
+# Install PhaseQFlow policy package in editable mode
+pip install -e ./lerobot_policy_phaseqflow
+```
 
-   ```bash
-   pip install -r requirements.txt
-   pip install -e ./lerobot_policy_phaseqflow
-   ```
+## Typical workflow
 
-3. **Inspect the dataset** (optional)::
+### 1) Inspect dataset quality and length distribution
 
-   ```bash
-   python scripts/inspect_dataset.py --dataset HuggingFaceVLA/smol-libero --n 5
-   python scripts/compute_episode_lengths.py \
-     --dataset HuggingFaceVLA/smol-libero \
-     --out artifacts/episode_lengths/smol_libero_lengths.json
-   ```
+```bash
+python scripts/inspect_dataset.py --dataset HuggingFaceVLA/smol-libero --n 5
+python scripts/compute_episode_lengths.py \
+  --dataset HuggingFaceVLA/smol-libero \
+  --out artifacts/episode_lengths/smol_libero_lengths.json
+```
 
-4. **Run a small PhaseQFlow training job**::
+### 2) Run local PhaseQFlow training
 
-   ```bash
-   bash configs/local/phaseqflow_local.sh
-   ```
+```bash
+bash configs/local/phaseqflow_local.sh
+```
 
-5. **Evaluate the trained policy on LIBERO**::
+### 3) Evaluate the trained checkpoint
 
-   ```bash
-   bash scripts/run_eval_libero.sh outputs/train/phaseqflow_smol_local/checkpoints/last/pretrained_model
-   ```
+```bash
+bash scripts/run_eval_libero.sh \
+  outputs/train/phaseqflow_smol_local/checkpoints/last/pretrained_model
+```
 
-6. **Export the checkpoint** (optional)::
+### 4) Export model artifacts for sharing/deployment
 
-   ```bash
-   python scripts/export_checkpoint.py \
-     --src outputs/train/phaseqflow_smol_local/checkpoints/last/pretrained_model \
-     --dst exports/phaseqflow_smol_local
-   ```
+```bash
+python scripts/export_checkpoint.py \
+  --src outputs/train/phaseqflow_smol_local/checkpoints/last/pretrained_model \
+  --dst exports/phaseqflow_smol_local
+```
 
-Refer to `configs/local/diffusion_baseline_local.sh` for a baseline diffusion run
-and `configs/local/smolvla_lora_local.sh` for a lightweight SmolVLA
-PEFT/LoRA fine‑tuning example.
+## Baselines and extensions
 
-## Cloud training
+- Diffusion baseline (local): `configs/local/diffusion_baseline_local.sh`
+- SmolVLA LoRA fine-tuning (local): `configs/local/smolvla_lora_local.sh`
+- PhaseQFlow cloud training: `configs/cloud/phaseqflow_cloud_accelerate.sh`
+- SmolVLA LoRA cloud training: `configs/cloud/smolvla_lora_cloud_accelerate.sh`
 
-For full LIBERO training, you can launch a multi‑GPU job using the
-`accelerate` library.  See `configs/cloud/phaseqflow_cloud_accelerate.sh`
-for an example command.  Adjust the batch size, number of steps, and
-`accelerate` settings to your hardware.  See the LeRobot
-documentation on [multi‑GPU training](https://huggingface.co/docs/lerobot/multi_gpu_training)
-for details.
+## Documentation map
 
-## Documentation and application materials
-
-In the `docs/` directory you will find:
-
-* **Project abstracts**  summarizing the
-  research contributions of PhaseQFlow.
-* **CV bullet points** describing the project in a concise manner.
+- Project abstract: `docs/PROJECT_ABSTRACT.md`
+- CV-ready highlights: `docs/CV_BULLETS.md`
+- Operations and usage guide: `docs/OPERATIONS_GUIDE.md`
 
 ## License
 
-This repository is released under the Apache 2.0 license.  See the
-`LICENSE` file for details.  Portions of the code are inspired by
-examples and documentation from the LeRobot project.
+This repository is released under the Apache 2.0 License. See `LICENSE` for details.
