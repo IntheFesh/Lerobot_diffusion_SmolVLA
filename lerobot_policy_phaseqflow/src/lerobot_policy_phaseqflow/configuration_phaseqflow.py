@@ -14,9 +14,18 @@ class PhaseQFlowConfig:
 
     # Legacy switches
     num_phases: int = 4
-    use_quality_weight: bool = True
-    use_flow_matching: bool = False
     phase_embedding_dim: int = 32
+
+    # 1) Learned skill phase
+    num_skills: int = 16
+    use_vq_phase: bool = True
+    skill_embedding_dim: int = 32
+    vq_commitment_cost: float = 0.25
+
+    # 2) Value-guided weighting
+    use_quality_weight: bool = True
+    use_value_guided_weight: bool = True
+    value_weight_beta: float = 1.0
     quality_weight_min: float = 0.5
     quality_weight_max: float = 1.0
 
