@@ -1,14 +1,4 @@
-"""
-processor_phaseqflow.py
-=======================
-
-Data processor for upgraded PhaseQFlow.
-
-Changes:
-- Removes temporal phase computation from frame index.
-- Removes jerk-based quality weighting.
-- Adds light image/state augmentation hooks for robustness.
-"""
+"""Data processor for PhaseQFlow training/inference batches."""
 
 from __future__ import annotations
 
@@ -16,24 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import torch
-
-try:
-    import torchvision.transforms as T
-except Exception:
-    T = None
-
-try:
-    from lerobot.processor import Processor
-    from lerobot.processor.converters import convert_images_to_tensor, convert_states_to_tensor
-except Exception:
-    class Processor:
-        pass
-
-    def convert_images_to_tensor(x: Any) -> Any:
-        return x
-
-    def convert_states_to_tensor(x: Any) -> Any:
-        return x
+import torchvision.transforms as T
 
 
 @dataclass
@@ -46,27 +19,32 @@ class ProcessorConfig:
     image_randaugment_m: int = 9
 
 
-class PhaseQFlowProcessor(Processor):
+class PhaseQFlowProcessor:
+    """Prepare tensors and lightweight augmentations.
+
+    This processor intentionally does not compute temporal phase ids or
+    jerk-based quality weights. Skill ids and value-guided weights are learned
+    in the model through the skill encoder and critic.
+    """
+
     def __init__(self, config: ProcessorConfig) -> None:
-        super().__init__()
         self.config = config
-        self.image_aug = None
-        if T is not None:
-            self.image_aug = T.RandAugment(num_ops=config.image_randaugment_n, magnitude=config.image_randaugment_m)
+        self.image_aug = T.RandAugment(num_ops=config.image_randaugment_n, magnitude=config.image_randaugment_m)
+
+    @staticmethod
+    def _to_tensor(x: Any) -> torch.Tensor:
+        return x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
 
     def _augment_images(self, images_tensor: torch.Tensor) -> torch.Tensor:
-        if self.image_aug is None:
-            return images_tensor
-        if images_tensor.ndim < 4:
+        if images_tensor.ndim != 4:
             return images_tensor
         out = []
         for img in images_tensor:
-            img_in = img
-            # RandAugment expects uint8 image in [0,255] for best compatibility.
-            if img_in.dtype != torch.uint8:
-                img_in = (img_in.clamp(0, 1) * 255.0).to(torch.uint8)
-            img_aug = self.image_aug(img_in)
-            out.append(img_aug.float() / 255.0)
+            image_in = img
+            if image_in.dtype != torch.uint8:
+                image_in = (image_in.clamp(0, 1) * 255.0).to(torch.uint8)
+            image_out = self.image_aug(image_in)
+            out.append(image_out.float() / 255.0)
         return torch.stack(out, dim=0)
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
@@ -74,19 +52,13 @@ class PhaseQFlowProcessor(Processor):
         obs_states: List[torch.Tensor] = []
 
         for sample in batch:
-            images = sample.get("observation.images.image") or sample.get("observation.images")
-            states = sample.get("observation.state") or sample.get("state")
+            images = sample.get("observation.images.image", sample.get("observation.images"))
+            states = sample.get("observation.state", sample.get("state"))
+            if images is None or states is None:
+                raise KeyError("Each sample must include observation images and state")
 
-            images_tensor = convert_images_to_tensor(images)
-            states_tensor = convert_states_to_tensor(states)
-
-            if not isinstance(images_tensor, torch.Tensor):
-                images_tensor = torch.as_tensor(images_tensor)
-            if not isinstance(states_tensor, torch.Tensor):
-                states_tensor = torch.as_tensor(states_tensor)
-
-            obs_images.append(images_tensor.float())
-            obs_states.append(states_tensor.float())
+            obs_images.append(self._to_tensor(images).float())
+            obs_states.append(self._to_tensor(states).float())
 
         obs_images_t = torch.stack(obs_images, dim=0)
         obs_states_t = torch.stack(obs_states, dim=0)
@@ -96,9 +68,7 @@ class PhaseQFlowProcessor(Processor):
             obs_states_t = obs_states_t + torch.randn_like(obs_states_t) * self.config.state_noise_std
 
         batch_size = obs_images_t.shape[0]
-        # skill_id is discovered by model-side VQ encoder; processor provides placeholder.
         skill_id = torch.full((batch_size,), -1, dtype=torch.long)
-        # sample_weight is learned from critic/value model; default uniform.
         sample_weight = torch.ones(batch_size, dtype=torch.float32)
 
         return {
