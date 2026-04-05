@@ -1,20 +1,25 @@
-"""
-lerobot_policy_phaseqflow
-========================
+"""PhaseQFlow policy package.
 
-This package implements PhaseQFlow, a phase‑aware and quality‑weighted
-generative policy for LeRobot.  It exposes a custom configuration class,
-a model class, and processors for phase and quality handling.  When
-installed, the policy is registered as a LeRobot plug‑in under the
-`lerobot.policies` entry point group.
+This package exposes lightweight configuration/utilities without forcing heavy
+runtime deps at import time. Model/processor classes are lazily imported.
 """
 
 from .configuration_phaseqflow import PhaseQFlowConfig
-from .modeling_phaseqflow import PhaseQFlowPolicy
-from .processor_phaseqflow import PhaseQFlowProcessor
 
 __all__ = [
     "PhaseQFlowConfig",
     "PhaseQFlowPolicy",
     "PhaseQFlowProcessor",
 ]
+
+
+def __getattr__(name: str):
+    if name == "PhaseQFlowPolicy":
+        from .modeling_phaseqflow import PhaseQFlowPolicy
+
+        return PhaseQFlowPolicy
+    if name == "PhaseQFlowProcessor":
+        from .processor_phaseqflow import PhaseQFlowProcessor
+
+        return PhaseQFlowProcessor
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
