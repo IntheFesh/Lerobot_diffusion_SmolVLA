@@ -1,12 +1,4 @@
-"""
-processor_phaseqflow.py
-=======================
-
-Data processor for the upgraded PhaseQFlow pipeline:
-- optional visual augmentation (rand-augment style + cutout)
-- state noise injection
-- learned-skill placeholder IDs instead of temporal phase IDs
-"""
+"""Data processor for PhaseQFlow training/inference batches."""
 
 from __future__ import annotations
 
@@ -14,111 +6,74 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import torch
-
-try:
-    from lerobot.processor import Processor
-    from lerobot.processor.converters import (
-        convert_images_to_tensor,
-        convert_states_to_tensor,
-    )
-except Exception:
-    class Processor:
-        pass
-
-    def convert_images_to_tensor(x: Any) -> Any:
-        return x
-
-    def convert_states_to_tensor(x: Any) -> Any:
-        return x
+import torchvision.transforms as T
 
 
 @dataclass
 class ProcessorConfig:
     num_skills: int = 16
-    use_value_weight: bool = True
-    apply_augmentation: bool = True
+    use_vq_phase: bool = True
+    use_value_guided_weight: bool = True
     state_noise_std: float = 0.01
-    cutout_frac: float = 0.15
+    image_randaugment_n: int = 2
+    image_randaugment_m: int = 9
 
 
-class PhaseQFlowProcessor(Processor):
-    """Processor to augment samples with skill IDs and sample weights."""
+class PhaseQFlowProcessor:
+    """Prepare tensors and lightweight augmentations.
+
+    This processor intentionally does not compute temporal phase ids or
+    jerk-based quality weights. Skill ids and value-guided weights are learned
+    in the model through the skill encoder and critic.
+    """
 
     def __init__(self, config: ProcessorConfig) -> None:
-        super().__init__()
         self.config = config
+        self.image_aug = T.RandAugment(num_ops=config.image_randaugment_n, magnitude=config.image_randaugment_m)
+
+    @staticmethod
+    def _to_tensor(x: Any) -> torch.Tensor:
+        return x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
+
+    def _augment_images(self, images_tensor: torch.Tensor) -> torch.Tensor:
+        if images_tensor.ndim != 4:
+            return images_tensor
+        out = []
+        for img in images_tensor:
+            image_in = img
+            if image_in.dtype != torch.uint8:
+                image_in = (image_in.clamp(0, 1) * 255.0).to(torch.uint8)
+            image_out = self.image_aug(image_in)
+            out.append(image_out.float() / 255.0)
+        return torch.stack(out, dim=0)
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         obs_images: List[torch.Tensor] = []
         obs_states: List[torch.Tensor] = []
-        skill_ids: List[int] = []
-        sample_weights: List[float] = []
 
         for sample in batch:
-            images = sample.get("observation.images.image") or sample.get("observation.images")
-            states = sample.get("observation.state") or sample.get("state")
+            images = sample.get("observation.images.image", sample.get("observation.images"))
+            states = sample.get("observation.state", sample.get("state"))
+            if images is None or states is None:
+                raise KeyError("Each sample must include observation images and state")
 
-            images_tensor = self._to_tensor(convert_images_to_tensor(images), dtype=torch.float32)
-            states_tensor = self._to_tensor(convert_states_to_tensor(states), dtype=torch.float32)
+            obs_images.append(self._to_tensor(images).float())
+            obs_states.append(self._to_tensor(states).float())
 
-            if self.config.apply_augmentation:
-                images_tensor = self._augment_images(images_tensor)
-            states_tensor = self._augment_states(states_tensor)
+        obs_images_t = torch.stack(obs_images, dim=0)
+        obs_states_t = torch.stack(obs_states, dim=0)
 
-            obs_images.append(images_tensor)
-            obs_states.append(states_tensor)
+        obs_images_t = self._augment_images(obs_images_t)
+        if self.config.state_noise_std > 0:
+            obs_states_t = obs_states_t + torch.randn_like(obs_states_t) * self.config.state_noise_std
 
-            skill_id = sample.get("skill_id")
-            if skill_id is None:
-                # Lightweight deterministic fallback from state statistics.
-                state_mean = float(states_tensor.mean().item()) if states_tensor.numel() > 0 else 0.0
-                skill_id = int(abs(state_mean * 997)) % max(self.config.num_skills, 1)
-            skill_ids.append(int(skill_id))
-
-            q_value = sample.get("q_value", sample.get("return", 0.0))
-            sample_weights.append(self._value_weight(q_value) if self.config.use_value_weight else 1.0)
+        batch_size = obs_images_t.shape[0]
+        skill_id = torch.full((batch_size,), -1, dtype=torch.long)
+        sample_weight = torch.ones(batch_size, dtype=torch.float32)
 
         return {
-            "obs_images": torch.stack(obs_images, dim=0),
-            "obs_states": torch.stack(obs_states, dim=0),
-            "skill_id": torch.tensor(skill_ids, dtype=torch.long),
-            "sample_weight": torch.tensor(sample_weights, dtype=torch.float32),
+            "obs_images": obs_images_t,
+            "obs_states": obs_states_t,
+            "skill_id": skill_id,
+            "sample_weight": sample_weight,
         }
-
-    def _to_tensor(self, x: Any, dtype: torch.dtype) -> torch.Tensor:
-        if torch.is_tensor(x):
-            return x.to(dtype=dtype)
-        return torch.as_tensor(x, dtype=dtype)
-
-    def _augment_images(self, images: torch.Tensor) -> torch.Tensor:
-        x = images
-        # Ensure image-like scale assumptions remain stable.
-        if x.is_floating_point():
-            # Random brightness/contrast jitter
-            brightness = 1.0 + (torch.rand(1, device=x.device) - 0.5) * 0.2
-            contrast = 1.0 + (torch.rand(1, device=x.device) - 0.5) * 0.2
-            x_mean = x.mean()
-            x = (x - x_mean) * contrast + x_mean
-            x = x * brightness
-
-        # Cutout on last two dims (H, W)
-        if x.ndim >= 3:
-            h = x.shape[-2]
-            w = x.shape[-1]
-            ch = max(1, int(h * self.config.cutout_frac))
-            cw = max(1, int(w * self.config.cutout_frac))
-            top = torch.randint(0, max(h - ch + 1, 1), (1,), device=x.device).item()
-            left = torch.randint(0, max(w - cw + 1, 1), (1,), device=x.device).item()
-            x = x.clone()
-            x[..., top : top + ch, left : left + cw] = 0
-        return x
-
-    def _augment_states(self, states: torch.Tensor) -> torch.Tensor:
-        if self.config.state_noise_std <= 0:
-            return states
-        noise = torch.randn_like(states) * self.config.state_noise_std
-        return states + noise
-
-    def _value_weight(self, q_value: Any, beta: float = 1.0) -> float:
-        q = float(q_value)
-        return float(torch.exp(torch.tensor(beta * q)).item())

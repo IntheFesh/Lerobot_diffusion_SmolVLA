@@ -1,82 +1,63 @@
-"""
-processor_steps_phaseq.py
-=========================
-
-Online utilities for skill/value signals during step-based inference.
-Temporal phase logic has been replaced by latent skill phase utilities.
-"""
+"""Online helpers for skill-phase/value-guided inference."""
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Deque
 
 import numpy as np
 
 
-def infer_skill_id_from_features(
-    feature: np.ndarray,
-    codebook: np.ndarray,
-) -> int:
-    """Assign nearest codebook index as a latent skill token."""
-    feat = np.asarray(feature, dtype=float).reshape(1, -1)
-    codes = np.asarray(codebook, dtype=float)
-    if codes.ndim != 2:
-        raise ValueError("codebook must have shape (K, D)")
-    if feat.shape[-1] != codes.shape[-1]:
-        raise ValueError("feature and codebook embedding dimensions must match")
-
-    distances = np.sum((codes - feat) ** 2, axis=-1)
-    return int(np.argmin(distances))
+def compute_skill_id_from_logits(skill_logits: np.ndarray) -> int:
+    """Return discrete skill token id from 1D logits/probabilities."""
+    logits = np.asarray(skill_logits, dtype=float)
+    if logits.ndim != 1:
+        raise ValueError("skill_logits must be a 1D array")
+    return int(np.argmax(logits))
 
 
-def compute_value_weight(
-    q_value: float,
-    beta: float = 1.0,
-    min_weight: float = 1e-3,
-) -> float:
-    """Compute an exponential value-guided scalar weight."""
-    weight = np.exp(beta * float(q_value))
+def compute_value_weight(q_value: float, beta: float = 2.0, min_weight: float = 1e-3) -> float:
+    """Convert critic value into a positive exponential sample weight."""
+    weight = float(np.exp(beta * float(q_value)))
     return float(max(weight, min_weight))
 
 
 @dataclass
-class OnlinePhaseState:
-    """Lightweight online helper with bounded action history."""
+class OnlineSkillState:
+    """Bounded online state with incremental normalization statistics."""
 
     num_skills: int = 16
-    action_window: int = 64
-    beta: float = 1.0
-    frame_index: int = 0
-    _action_buffer: deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=64))
+    beta: float = 2.0
+    action_buffer_maxlen: int = 128
+    _action_buffer: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=128))
+    _weight_buffer: Deque[float] = field(default_factory=lambda: deque(maxlen=128))
+    _weight_sum: float = 0.0
+
+    def __post_init__(self) -> None:
+        self._action_buffer = deque(maxlen=self.action_buffer_maxlen)
+        self._weight_buffer = deque(maxlen=self.action_buffer_maxlen)
+        self._weight_sum = 0.0
 
     def reset(self) -> None:
-        self.frame_index = 0
         self._action_buffer.clear()
+        self._weight_buffer.clear()
+        self._weight_sum = 0.0
 
-    def step(
-        self,
-        action_t: np.ndarray,
-        skill_id: Optional[int] = None,
-        q_value: Optional[float] = None,
-    ) -> tuple[int, float]:
-        """Update state and return (skill_id, value_weight)."""
-        if self._action_buffer.maxlen != self.action_window:
-            self._action_buffer = deque(self._action_buffer, maxlen=self.action_window)
+    def _append_weight(self, weight: float) -> None:
+        if len(self._weight_buffer) == self._weight_buffer.maxlen:
+            oldest = self._weight_buffer[0]
+            self._weight_sum -= oldest
+        self._weight_buffer.append(weight)
+        self._weight_sum += weight
 
+    def step(self, action_t: np.ndarray, skill_logits_t: np.ndarray, q_value_t: float) -> tuple[int, float]:
         self._action_buffer.append(np.asarray(action_t, dtype=float))
 
-        if skill_id is None:
-            # Fallback skill from action statistics if encoder output is absent.
-            action_mean = float(np.mean(self._action_buffer[-1]))
-            skill_id = int(abs(action_mean * 997)) % max(self.num_skills, 1)
+        skill_id = compute_skill_id_from_logits(skill_logits_t)
+        raw_weight = compute_value_weight(q_value_t, beta=self.beta)
+        self._append_weight(raw_weight)
 
-        if q_value is None:
-            # Incremental proxy q from recent action variance.
-            arr = np.asarray(self._action_buffer)
-            q_value = -float(np.var(arr)) if arr.size > 0 else 0.0
-
-        value_weight = compute_value_weight(q_value, beta=self.beta)
-        self.frame_index += 1
-        return int(skill_id), value_weight
+        avg_weight = self._weight_sum / max(len(self._weight_buffer), 1)
+        normalized_weight = raw_weight / max(avg_weight, 1e-6)
+        return skill_id, float(normalized_weight)
