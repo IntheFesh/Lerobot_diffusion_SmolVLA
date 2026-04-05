@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-
 @dataclass
 class PhaseQFlowConfig:
     """Lightweight config with backward-compatible fields."""
