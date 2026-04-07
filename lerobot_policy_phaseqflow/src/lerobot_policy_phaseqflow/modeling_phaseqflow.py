@@ -16,11 +16,13 @@ class SkillVQEncoder(nn.Module):
     """Gumbel-Softmax discrete phase encoder."""
 
     def __init__(self, input_dim: int, num_skills: int, temperature: float = 1.0) -> None:
+        """Initialize the linear projection used for discrete phase inference."""
         super().__init__()
         self.proj = nn.Linear(input_dim, num_skills)
         self.temperature = temperature
 
     def forward(self, x: torch.Tensor, training: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Infer discrete skill ids and return `(id, probs, logits)`."""
         logits = self.proj(x)
         probs = F.gumbel_softmax(logits, tau=self.temperature, hard=True, dim=-1) if training else logits.softmax(dim=-1)
         skill_id = probs.argmax(dim=-1)
@@ -31,6 +33,7 @@ class VisionTokenizer(nn.Module):
     """Multimodal tokenization with asymmetric cross-attention + uncertainty gate."""
 
     def __init__(self, config: PhaseQFlowConfig) -> None:
+        """Build multimodal tokenizers, cross-attention, and uncertainty gate."""
         super().__init__()
         self.config = config
 
@@ -54,6 +57,7 @@ class VisionTokenizer(nn.Module):
         )
 
     def maybe_freeze_vision(self) -> None:
+        """Freeze the vision backbone when adapter-style training is requested."""
         if not self.config.freeze_vision_encoder:
             return
         for p in self.vision_backbone.parameters():
@@ -67,6 +71,7 @@ class VisionTokenizer(nn.Module):
         history: Optional[torch.Tensor] = None,
         masks: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
+        """Tokenize multimodal inputs and fuse visual/proprioceptive context."""
         del masks
         if images.ndim > 2:
             images = images.flatten(start_dim=1)
@@ -114,6 +119,7 @@ class HierarchicalPlanner(nn.Module):
     """Discrete phase + continuous skill latent planner."""
 
     def __init__(self, config: PhaseQFlowConfig) -> None:
+        """Initialize discrete phase encoder and continuous skill latent head."""
         super().__init__()
         self.config = config
         self.phase_encoder = SkillVQEncoder(config.fusion_hidden_dim, config.num_skills, config.gumbel_temperature)
@@ -130,6 +136,7 @@ class HierarchicalPlanner(nn.Module):
         phase_labels: Optional[torch.Tensor] = None,
         phase_mode: Optional[str] = None,
     ) -> Dict[str, torch.Tensor]:
+        """Infer phase/skill latents under manual, latent, or hybrid supervision modes."""
         mode = phase_mode or self.config.weak_phase_supervision_mode
         inferred_phase_id, _, phase_logits = self.phase_encoder(fused_obs, training=self.training)
 
@@ -153,6 +160,7 @@ class FlowActionHead(nn.Module):
     """Phase-conditioned continuous action chunk generator."""
 
     def __init__(self, config: PhaseQFlowConfig) -> None:
+        """Create conditional flow field and action decoder."""
         super().__init__()
         self.config = config
         cond_dim = config.fusion_hidden_dim + config.skill_embedding_dim + config.continuous_skill_dim
@@ -166,6 +174,7 @@ class FlowActionHead(nn.Module):
         self.action_decoder = nn.Linear(config.latent_dim, config.action_dim)
 
     def forward(self, fused_obs: torch.Tensor, phase_embed: torch.Tensor, skill_latent: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Integrate a conditional flow from noise and decode to actions."""
         cond = self.conditioner(torch.cat([fused_obs, phase_embed, skill_latent], dim=-1))
         u = torch.randn(fused_obs.size(0), self.latent_dim, device=fused_obs.device)
         dt = 1.0 / max(self.config.flow_steps, 1)
@@ -181,6 +190,7 @@ class ChunkVerifier(nn.Module):
     """Closed-loop chunk confidence + phase drift estimator."""
 
     def __init__(self, config: PhaseQFlowConfig) -> None:
+        """Build chunk confidence and phase-drift prediction head."""
         super().__init__()
         in_dim = config.fusion_hidden_dim + config.action_dim + config.skill_embedding_dim
         self.net = nn.Sequential(
@@ -190,6 +200,7 @@ class ChunkVerifier(nn.Module):
         )
 
     def forward(self, fused_obs: torch.Tensor, predicted_action: torch.Tensor, phase_embed: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Estimate online execution confidence and replanning flags."""
         out = self.net(torch.cat([fused_obs, predicted_action, phase_embed], dim=-1))
         confidence = torch.sigmoid(out[:, 0])
         phase_drift = torch.sigmoid(out[:, 1])
@@ -204,6 +215,7 @@ class DiTBackbone(nn.Module):
     """Transformer context encoder."""
 
     def __init__(self, hidden_dim: int, num_layers: int, num_heads: int) -> None:
+        """Construct a lightweight Transformer encoder for context tokens."""
         super().__init__()
         layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -216,6 +228,7 @@ class DiTBackbone(nn.Module):
         self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode token sequences into contextualized representations."""
         return self.encoder(x)
 
 
@@ -225,6 +238,7 @@ class PhaseQFlowPolicy(nn.Module):
     config_class = PhaseQFlowConfig
 
     def __init__(self, config: PhaseQFlowConfig, base_policy: Optional[nn.Module] = None, **_: Any) -> None:
+        """Initialize all four policy modules and auxiliary loss networks."""
         super().__init__()
         self.config = config
         self.base_policy = base_policy
@@ -248,14 +262,17 @@ class PhaseQFlowPolicy(nn.Module):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, *args: Any, **kwargs: Any) -> "PhaseQFlowPolicy":
+        """Instantiate policy from a serialized configuration location."""
         config = cls.config_class.from_pretrained(pretrained_model_name_or_path)
         _ = args
         return cls(config=config, **kwargs)
 
     def to_config_dict(self) -> Dict[str, Any]:
+        """Return configuration as a plain dictionary."""
         return asdict(self.config)
 
     def _extract_actions(self, batch: Dict[str, Any]) -> Optional[torch.Tensor]:
+        """Extract supervision actions from common batch key aliases."""
         for key in ("action", "actions", "target_action"):
             value = batch.get(key)
             if isinstance(value, torch.Tensor):
@@ -263,6 +280,7 @@ class PhaseQFlowPolicy(nn.Module):
         return None
 
     def _extract_inputs(self, batch: Dict[str, Any]) -> Dict[str, Optional[torch.Tensor]]:
+        """Extract explicit multimodal inputs from batch/obs dictionaries."""
         obs = batch.get("obs", batch)
         images = obs.get("images", obs.get("obs_images", obs.get("observation.images")))
         states = obs.get("states", obs.get("obs_states", obs.get("observation.state")))
@@ -289,6 +307,7 @@ class PhaseQFlowPolicy(nn.Module):
         timestep: Optional[torch.Tensor] = None,
         phase_labels: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
+        """Run four-layer forward pass and return intermediate diagnostics."""
         tok = self.vision_tokenizer(images=images, states=states, language=language, history=history, masks=masks)
         context = self.context_backbone(tok["context_tokens"])
         fused_obs = context.mean(dim=1) + tok["fused"]
@@ -311,12 +330,14 @@ class PhaseQFlowPolicy(nn.Module):
         }
 
     def predict_action(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        """Predict actions from a training/evaluation batch dictionary."""
         inputs = self._extract_inputs(batch)
         timestep = batch.get("timestep")
         phase_labels = batch.get("phase_id")
         return self.forward(**inputs, timestep=timestep, phase_labels=phase_labels)
 
     def compute_loss(self, batch: Dict[str, Any]) -> torch.Tensor:
+        """Compute imitation, flow, phase, and verifier training objectives."""
         preds = self.predict_action(batch)
         actions = self._extract_actions(batch)
         if actions is None:
@@ -362,6 +383,7 @@ class PhaseQFlowPolicy(nn.Module):
         return loss
 
     def update_critic(self, obs_feat: torch.Tensor, actions: torch.Tensor, target_q: torch.Tensor) -> torch.Tensor:
+        """Update critic via MSE regression against target Q values."""
         critic_in = torch.cat([obs_feat, actions], dim=-1)
         pred_q = self.critic_network(critic_in).squeeze(-1)
         return F.mse_loss(pred_q, target_q)

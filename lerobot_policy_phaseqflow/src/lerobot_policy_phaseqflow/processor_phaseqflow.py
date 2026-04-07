@@ -23,14 +23,17 @@ class PhaseQFlowProcessor:
     """Prepare explicit multimodal tensors for the 4-layer policy forward path."""
 
     def __init__(self, config: ProcessorConfig) -> None:
+        """Initialize image augmentation and processor configuration."""
         self.config = config
         self.image_aug = T.RandAugment(num_ops=config.image_randaugment_n, magnitude=config.image_randaugment_m)
 
     @staticmethod
     def _to_tensor(x: Any) -> torch.Tensor:
+        """Convert input data into a torch tensor without copying when possible."""
         return x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
 
     def _augment_images(self, images_tensor: torch.Tensor) -> torch.Tensor:
+        """Apply RandAugment to batched image tensors when format matches BCHW."""
         if images_tensor.ndim != 4:
             return images_tensor
         out = []
@@ -43,6 +46,7 @@ class PhaseQFlowProcessor:
         return torch.stack(out, dim=0)
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        """Build explicit multimodal batch payload for policy forward signatures."""
         obs_images: List[torch.Tensor] = []
         obs_states: List[torch.Tensor] = []
         language: List[torch.Tensor] = []

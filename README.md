@@ -5,8 +5,8 @@ This repository is a research-and-engineering template for training and evaluati
 [LeRobot](https://huggingface.co/docs/lerobot/index), with a focus on
 [LIBERO](https://libero-project.github.io/) long-horizon manipulation tasks.
 
-The core contribution is **PhaseQFlow**: a phase-aware, quality-weighted,
-flow-matching policy that extends the LeRobot policy plugin architecture.
+The core contribution is **PhaseQFlow++**: a four-layer multimodal hierarchical
+policy that extends the LeRobot policy plugin architecture.
 The repository also includes baseline diffusion configuration, SmolVLA LoRA
 fine-tuning examples, and utility scripts for dataset inspection, evaluation,
 latency benchmarking, and checkpoint export.
@@ -14,9 +14,54 @@ latency benchmarking, and checkpoint export.
 ## Project goals
 
 - Provide a reproducible LeRobot-compatible codebase for LIBERO experiments.
-- Improve long-horizon policy learning with explicit phase conditioning.
-- Improve sample efficiency with quality-weighted imitation learning.
+- Upgrade monolithic policies to explicit multimodal, hierarchical, and
+  closed-loop control modules.
+- Improve long-horizon policy learning with discrete-continuous phase/skill
+  latents instead of phase-as-feature shortcuts.
+- Improve sample efficiency with value-guided imitation and stage-wise training.
 - Offer practical scripts for local debugging and cloud-scale training.
+
+## Latest model architecture (PhaseQFlow++)
+
+The policy is now organized into **four explicit layers**:
+
+1. **Multimodal tokenization layer** (`VisionTokenizer`):
+   - Explicit inputs: `images, states, language, history, masks`.
+   - Asymmetric cross-attention (`state/history` as query; `vision` as key/value).
+   - Uncertainty gate to balance proprioception and visual evidence.
+2. **Hierarchical latent planner** (`HierarchicalPlanner`):
+   - Discrete phase latent `z^(p)` and continuous skill latent `z^(s)`.
+   - Weak-supervision modes: `manual | latent | hybrid`.
+3. **Conditional flow action generator** (`FlowActionHead`):
+   - Phase-conditioned continuous flow field for action chunk generation.
+4. **Closed-loop verifier + replanning trigger** (`ChunkVerifier`):
+   - Estimates chunk confidence and phase drift.
+   - Emits `should_replan` for online truncation/regeneration.
+
+## Latest training strategy (4-stage curriculum)
+
+Training is now split into stage-wise configs:
+
+- `configs/pretrain_multimodal.yaml`: multimodal representation alignment.
+- `configs/train_latent.yaml`: phase/skill latent learning.
+- `configs/train_flow.yaml`: conditional flow imitation.
+- `configs/finetune_closedloop.yaml`: closed-loop verifier and correction tuning.
+
+This avoids single-stage BC collapse and makes ablation studies explicit.
+
+## Latest data processing strategy
+
+The processor now emits an explicit multimodal observation dictionary:
+
+- `obs.images`
+- `obs.states`
+- `obs.language`
+- `obs.history`
+- `obs.masks`
+
+Top-level compatibility keys are retained for legacy integrations, but policy
+forwarding now prioritizes explicit multimodal fields for clarity and
+reproducibility.
 
 ## Repository structure
 
