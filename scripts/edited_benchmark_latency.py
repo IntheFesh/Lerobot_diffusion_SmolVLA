@@ -1,8 +1,7 @@
 #!/usr/bin/env python
-"""Compatibility wrapper for benchmark latency script.
+"""Legacy filename wrapper for PhaseQFlow latency benchmark.
 
-This file is kept for backward compatibility. It delegates to
-`scripts/benchmark_latency.py` so there is a single implementation to maintain.
+Kept only for compatibility with old command lines.
 """
 
 from benchmark_latency import main

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Launch a PhaseQFlow training run on the Smol-LIBERO dataset.
-# Supports environment-variable overrides for smoke tests.
+# Launch a PhaseQFlow++ training run on Smol-LIBERO.
+# Parameters are aligned with lerobot_policy_phaseqflow configuration fields.
 
 set -euo pipefail
 
@@ -12,7 +12,8 @@ BATCH_SIZE="${BATCH_SIZE:-8}"
 STEPS="${STEPS:-5000}"
 EVAL_FREQ="${EVAL_FREQ:-1000}"
 NUM_PHASES="${NUM_PHASES:-4}"
-USE_QUALITY_WEIGHT="${USE_QUALITY_WEIGHT:-true}"
+USE_VALUE_GUIDED_WEIGHT="${USE_VALUE_GUIDED_WEIGHT:-true}"
+USE_LATENT_FLOW="${USE_LATENT_FLOW:-true}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -37,6 +38,7 @@ fi
   --policy.device "$DEVICE" \
   --policy.use_amp false \
   --policy.num_phases "$NUM_PHASES" \
-  --policy.use_quality_weight "$USE_QUALITY_WEIGHT"
+  --policy.use_value_guided_weight "$USE_VALUE_GUIDED_WEIGHT" \
+  --policy.use_latent_flow "$USE_LATENT_FLOW"
 
-echo "PhaseQFlow training completed. Check $OUTPUT_DIR for checkpoints."
+echo "PhaseQFlow++ training completed. Check $OUTPUT_DIR for checkpoints."

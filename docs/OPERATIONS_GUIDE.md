@@ -37,19 +37,9 @@ Why this matters:
 bash configs/local/phaseqflow_local.sh
 ```
 
-### Diffusion baseline local run
+Use local runs to validate PhaseQFlow config changes and avoid expensive cloud cycles.
 
-```bash
-bash configs/local/diffusion_baseline_local.sh
-```
-
-### SmolVLA LoRA local run
-
-```bash
-bash configs/local/smolvla_lora_local.sh
-```
-
-Use local runs to validate config changes and avoid expensive cloud cycles.
+> Legacy baseline scripts were moved under `configs/local/legacy/` to keep the default local workflow aligned with `lerobot_policy_phaseqflow`.
 
 ## 4. Cloud training recipes
 
@@ -57,12 +47,6 @@ Use local runs to validate config changes and avoid expensive cloud cycles.
 
 ```bash
 bash configs/cloud/phaseqflow_cloud_accelerate.sh
-```
-
-### SmolVLA LoRA cloud (accelerate)
-
-```bash
-bash configs/cloud/smolvla_lora_cloud_accelerate.sh
 ```
 
 Before launching, verify:
@@ -90,7 +74,7 @@ bash scripts/run_eval_pusht_sanity.sh \
 
 ```bash
 python scripts/benchmark_latency.py --help
-python scripts/edited_benchmark_latency.py --help
+python scripts/edited_benchmark_latency.py --help  # legacy alias
 ```
 
 Track both policy quality metrics (success/reward) and runtime metrics
