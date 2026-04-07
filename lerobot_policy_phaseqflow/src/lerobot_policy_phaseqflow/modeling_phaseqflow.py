@@ -1,10 +1,4 @@
-"""Core PhaseQFlow policy components.
-
-This module provides a lightweight implementation of:
-1) learned discrete skills (Gumbel/VQ-style),
-2) value-guided sample reweighting via a critic,
-3) latent-action flow-style prediction with decode-to-action.
-"""
+"""Core PhaseQFlow policy components with four-layer architecture."""
 
 from __future__ import annotations
 
@@ -19,39 +13,209 @@ from .configuration_phaseqflow import PhaseQFlowConfig
 
 
 class SkillVQEncoder(nn.Module):
-    """Lightweight Gumbel-Softmax skill encoder."""
+    """Gumbel-Softmax discrete phase encoder."""
 
     def __init__(self, input_dim: int, num_skills: int, temperature: float = 1.0) -> None:
+        """Initialize the linear projection used for discrete phase inference."""
         super().__init__()
         self.proj = nn.Linear(input_dim, num_skills)
         self.temperature = temperature
 
     def forward(self, x: torch.Tensor, training: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Infer discrete skill ids and return `(id, probs, logits)`."""
         logits = self.proj(x)
         probs = F.gumbel_softmax(logits, tau=self.temperature, hard=True, dim=-1) if training else logits.softmax(dim=-1)
         skill_id = probs.argmax(dim=-1)
         return skill_id, probs, logits
 
 
-class ActionTokenizer(nn.Module):
-    """Action compression/decompression for latent flow path."""
+class VisionTokenizer(nn.Module):
+    """Multimodal tokenization with asymmetric cross-attention + uncertainty gate."""
 
-    def __init__(self, action_dim: int, latent_dim: int) -> None:
+    def __init__(self, config: PhaseQFlowConfig) -> None:
+        """Build multimodal tokenizers, cross-attention, and uncertainty gate."""
         super().__init__()
-        self.encoder = nn.Linear(action_dim, latent_dim)
-        self.decoder = nn.Linear(latent_dim, action_dim)
+        self.config = config
 
-    def encode(self, action: torch.Tensor) -> torch.Tensor:
-        return self.encoder(action)
+        self.vision_backbone = nn.LazyLinear(config.vision_token_dim)
+        self.vision_adapter = nn.Linear(config.vision_token_dim, config.fusion_hidden_dim)
+        self.state_tokenizer = nn.LazyLinear(config.fusion_hidden_dim)
+        self.language_tokenizer = nn.LazyLinear(config.fusion_hidden_dim)
+        self.history_tokenizer = nn.LazyLinear(config.fusion_hidden_dim)
 
-    def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        return self.decoder(latent)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=config.fusion_hidden_dim,
+            num_heads=config.cross_attn_heads,
+            dropout=config.cross_attn_dropout,
+            batch_first=True,
+        )
+
+        self.uncertainty_gate = nn.Sequential(
+            nn.Linear(config.fusion_hidden_dim * 2, config.fusion_hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.fusion_hidden_dim, 1),
+        )
+
+    def maybe_freeze_vision(self) -> None:
+        """Freeze the vision backbone when adapter-style training is requested."""
+        if not self.config.freeze_vision_encoder:
+            return
+        for p in self.vision_backbone.parameters():
+            p.requires_grad = False
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        states: torch.Tensor,
+        language: Optional[torch.Tensor] = None,
+        history: Optional[torch.Tensor] = None,
+        masks: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Tokenize multimodal inputs and fuse visual/proprioceptive context."""
+        del masks
+        if images.ndim > 2:
+            images = images.flatten(start_dim=1)
+        if states.ndim > 2:
+            states = states.flatten(start_dim=1)
+
+        vision_tokens = self.vision_backbone(images).unsqueeze(1)
+        vision_tokens = self.vision_adapter(vision_tokens)
+
+        state_tokens = self.state_tokenizer(states).unsqueeze(1)
+
+        if language is None:
+            language = torch.zeros_like(states[:, :1])
+        if language.ndim > 2:
+            language = language.flatten(start_dim=1)
+        language_tokens = self.language_tokenizer(language).unsqueeze(1)
+
+        if history is None:
+            history = states
+        if history.ndim > 2:
+            history = history.flatten(start_dim=1)
+        history_tokens = self.history_tokenizer(history).unsqueeze(1)
+
+        query_tokens = torch.cat([state_tokens, history_tokens], dim=1)
+        attended, _ = self.cross_attn(query=query_tokens, key=vision_tokens, value=vision_tokens)
+        attended_summary = attended.mean(dim=1)
+        proprio_summary = torch.cat([state_tokens, history_tokens], dim=1).mean(dim=1)
+
+        gate = torch.sigmoid(self.uncertainty_gate(torch.cat([attended_summary, proprio_summary], dim=-1)))
+        fused = gate * attended_summary + (1.0 - gate) * proprio_summary
+
+        context_tokens = torch.cat([state_tokens, history_tokens, language_tokens, vision_tokens], dim=1)
+        return {
+            "fused": fused,
+            "context_tokens": context_tokens,
+            "vision_tokens": vision_tokens,
+            "state_tokens": state_tokens,
+            "language_tokens": language_tokens,
+            "history_tokens": history_tokens,
+            "uncertainty_gate": gate.squeeze(-1),
+        }
+
+
+class HierarchicalPlanner(nn.Module):
+    """Discrete phase + continuous skill latent planner."""
+
+    def __init__(self, config: PhaseQFlowConfig) -> None:
+        """Initialize discrete phase encoder and continuous skill latent head."""
+        super().__init__()
+        self.config = config
+        self.phase_encoder = SkillVQEncoder(config.fusion_hidden_dim, config.num_skills, config.gumbel_temperature)
+        self.skill_continuous = nn.Sequential(
+            nn.Linear(config.fusion_hidden_dim, config.fusion_hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.fusion_hidden_dim, config.continuous_skill_dim),
+        )
+        self.phase_embedding = nn.Embedding(config.num_skills, config.skill_embedding_dim)
+
+    def forward(
+        self,
+        fused_obs: torch.Tensor,
+        phase_labels: Optional[torch.Tensor] = None,
+        phase_mode: Optional[str] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Infer phase/skill latents under manual, latent, or hybrid supervision modes."""
+        mode = phase_mode or self.config.weak_phase_supervision_mode
+        inferred_phase_id, _, phase_logits = self.phase_encoder(fused_obs, training=self.training)
+
+        if mode == "manual" and phase_labels is not None and torch.all(phase_labels >= 0):
+            phase_id = phase_labels.long()
+        else:
+            phase_id = inferred_phase_id
+
+        phase_embed = self.phase_embedding(phase_id)
+        skill_latent = self.skill_continuous(fused_obs)
+
+        return {
+            "phase_id": phase_id,
+            "phase_logits": phase_logits,
+            "phase_embed": phase_embed,
+            "skill_latent": skill_latent,
+        }
+
+
+class FlowActionHead(nn.Module):
+    """Phase-conditioned continuous action chunk generator."""
+
+    def __init__(self, config: PhaseQFlowConfig) -> None:
+        """Create conditional flow field and action decoder."""
+        super().__init__()
+        self.config = config
+        cond_dim = config.fusion_hidden_dim + config.skill_embedding_dim + config.continuous_skill_dim
+        self.latent_dim = config.latent_dim
+        self.conditioner = nn.Linear(cond_dim, config.fusion_hidden_dim)
+        self.flow_field = nn.Sequential(
+            nn.Linear(config.latent_dim + config.fusion_hidden_dim + 1, config.fusion_hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.fusion_hidden_dim, config.latent_dim),
+        )
+        self.action_decoder = nn.Linear(config.latent_dim, config.action_dim)
+
+    def forward(self, fused_obs: torch.Tensor, phase_embed: torch.Tensor, skill_latent: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Integrate a conditional flow from noise and decode to actions."""
+        cond = self.conditioner(torch.cat([fused_obs, phase_embed, skill_latent], dim=-1))
+        u = torch.randn(fused_obs.size(0), self.latent_dim, device=fused_obs.device)
+        dt = 1.0 / max(self.config.flow_steps, 1)
+        for i in range(self.config.flow_steps):
+            tau = torch.full((u.size(0), 1), i * dt, device=u.device)
+            du = self.flow_field(torch.cat([u, cond, tau], dim=-1))
+            u = u + dt * du
+        action_pred = self.action_decoder(u)
+        return {"latent_action_pred": u, "action_pred": action_pred}
+
+
+class ChunkVerifier(nn.Module):
+    """Closed-loop chunk confidence + phase drift estimator."""
+
+    def __init__(self, config: PhaseQFlowConfig) -> None:
+        """Build chunk confidence and phase-drift prediction head."""
+        super().__init__()
+        in_dim = config.fusion_hidden_dim + config.action_dim + config.skill_embedding_dim
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, config.verifier_hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.verifier_hidden_dim, 2),
+        )
+
+    def forward(self, fused_obs: torch.Tensor, predicted_action: torch.Tensor, phase_embed: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Estimate online execution confidence and replanning flags."""
+        out = self.net(torch.cat([fused_obs, predicted_action, phase_embed], dim=-1))
+        confidence = torch.sigmoid(out[:, 0])
+        phase_drift = torch.sigmoid(out[:, 1])
+        return {
+            "chunk_confidence": confidence,
+            "phase_drift": phase_drift,
+            "should_replan": (confidence < 0.5) | (phase_drift > 0.5),
+        }
 
 
 class DiTBackbone(nn.Module):
-    """Small DiT-style transformer encoder."""
+    """Transformer context encoder."""
 
     def __init__(self, hidden_dim: int, num_layers: int, num_heads: int) -> None:
+        """Construct a lightweight Transformer encoder for context tokens."""
         super().__init__()
         layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -64,63 +228,30 @@ class DiTBackbone(nn.Module):
         self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode token sequences into contextualized representations."""
         return self.encoder(x)
 
 
-class LatentFlowHead(nn.Module):
-    """Predict latent action vectors from encoded observations."""
-
-    def __init__(self, obs_dim: int, latent_dim: int) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, obs_dim),
-            nn.SiLU(),
-            nn.Linear(obs_dim, latent_dim),
-        )
-
-    def forward(self, encoded_obs: torch.Tensor) -> torch.Tensor:
-        return self.net(encoded_obs)
-
-
 class PhaseQFlowPolicy(nn.Module):
-    """Lightweight, self-contained PhaseQFlow policy.
-
-    `base_policy` is optional. If provided and it exposes `compute_loss`, this
-    class will still use its loss, while all upgraded components remain active
-    (skills/critic/latent flow outputs and auxiliary losses).
-    """
+    """Four-module PhaseQFlow policy."""
 
     config_class = PhaseQFlowConfig
 
     def __init__(self, config: PhaseQFlowConfig, base_policy: Optional[nn.Module] = None, **_: Any) -> None:
+        """Initialize all four policy modules and auxiliary loss networks."""
         super().__init__()
         self.config = config
         self.base_policy = base_policy
 
-        obs_dim = config.dit_hidden_dim
-        action_dim = config.action_dim
+        self.vision_tokenizer = VisionTokenizer(config)
+        self.vision_tokenizer.maybe_freeze_vision()
+        self.context_backbone = DiTBackbone(config.fusion_hidden_dim, config.dit_num_layers, config.dit_num_heads)
+        self.hierarchical_planner = HierarchicalPlanner(config)
+        self.flow_action_head = FlowActionHead(config)
+        self.chunk_verifier = ChunkVerifier(config)
 
-        self.obs_encoder = nn.LazyLinear(config.dit_hidden_dim)
-        self.skill_encoder = SkillVQEncoder(
-            input_dim=config.dit_hidden_dim + action_dim,
-            num_skills=config.num_skills,
-            temperature=config.gumbel_temperature,
-        )
-        self.skill_embedding = nn.Embedding(config.num_skills, config.skill_embedding_dim)
-        self.obs_proj = nn.Linear(config.dit_hidden_dim + config.skill_embedding_dim, config.dit_hidden_dim)
-        self.timestep_embedding = nn.Embedding(config.max_timestep, config.dit_hidden_dim)
-
-        self.dit_backbone = DiTBackbone(
-            hidden_dim=config.dit_hidden_dim,
-            num_layers=config.dit_num_layers,
-            num_heads=config.dit_num_heads,
-        )
-
-        self.action_tokenizer = ActionTokenizer(action_dim=action_dim, latent_dim=config.latent_dim)
-        self.latent_flow_head = LatentFlowHead(obs_dim=config.dit_hidden_dim, latent_dim=config.latent_dim)
-        self.action_decoder = self.action_tokenizer.decoder
-
-        critic_in = config.dit_hidden_dim + action_dim
+        self.timestep_embedding = nn.Embedding(config.max_timestep, config.fusion_hidden_dim)
+        critic_in = config.fusion_hidden_dim + config.action_dim
         self.critic_network = nn.Sequential(
             nn.Linear(critic_in, config.critic_hidden_dim),
             nn.SiLU(),
@@ -131,99 +262,111 @@ class PhaseQFlowPolicy(nn.Module):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, *args: Any, **kwargs: Any) -> "PhaseQFlowPolicy":
+        """Instantiate policy from a serialized configuration location."""
         config = cls.config_class.from_pretrained(pretrained_model_name_or_path)
         _ = args
         return cls(config=config, **kwargs)
 
     def to_config_dict(self) -> Dict[str, Any]:
+        """Return configuration as a plain dictionary."""
         return asdict(self.config)
 
-    def _extract_obs_tensor(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        if "encoded_obs" in obs:
-            return obs["encoded_obs"].float()
-        if "obs_states" in obs:
-            return obs["obs_states"].float()
-        if "state" in obs:
-            return obs["state"].float()
-        raise KeyError("Expected one of: encoded_obs, obs_states, state")
-
     def _extract_actions(self, batch: Dict[str, Any]) -> Optional[torch.Tensor]:
+        """Extract supervision actions from common batch key aliases."""
         for key in ("action", "actions", "target_action"):
             value = batch.get(key)
             if isinstance(value, torch.Tensor):
                 return value.float()
         return None
 
-    def _compute_skill_id(
-        self,
-        obs_feat: torch.Tensor,
-        actions: Optional[torch.Tensor],
-        skill_id: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if skill_id is not None and torch.all(skill_id >= 0):
-            return skill_id.long(), torch.empty(0, device=obs_feat.device)
-
-        if actions is None:
-            actions = torch.zeros(obs_feat.size(0), self.config.action_dim, device=obs_feat.device)
-        encoder_in = torch.cat([obs_feat, actions], dim=-1)
-        inferred_id, _, logits = self.skill_encoder(encoder_in, training=self.training)
-        return inferred_id, logits
-
-    def encode_observation(
-        self,
-        obs: Dict[str, torch.Tensor],
-        skill_id: Optional[torch.Tensor] = None,
-        actions: Optional[torch.Tensor] = None,
-        timestep: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        raw_obs = self._extract_obs_tensor(obs)
-        obs_feat = self.obs_encoder(raw_obs)
-
-        selected_skill, skill_logits = self._compute_skill_id(obs_feat, actions, skill_id)
-        if self.config.use_vq_phase:
-            skill_emb = self.skill_embedding(selected_skill.to(obs_feat.device))
-        else:
-            skill_emb = torch.zeros(obs_feat.size(0), self.config.skill_embedding_dim, device=obs_feat.device)
-
-        fused = self.obs_proj(torch.cat([obs_feat, skill_emb], dim=-1))
-
-        if timestep is None:
-            timestep = torch.zeros(obs_feat.size(0), dtype=torch.long, device=obs_feat.device)
-        timestep = torch.clamp(timestep.long(), 0, self.config.max_timestep - 1)
-        t_emb = self.timestep_embedding(timestep)
-
-        token_seq = torch.stack([fused, t_emb], dim=1)
-        encoded = self.dit_backbone(token_seq)[:, 0, :]
-        return encoded, skill_logits
-
-    def predict_action(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+    def _extract_inputs(self, batch: Dict[str, Any]) -> Dict[str, Optional[torch.Tensor]]:
+        """Extract explicit multimodal inputs from batch/obs dictionaries."""
         obs = batch.get("obs", batch)
-        actions = self._extract_actions(batch)
-        timestep = batch.get("timestep")
-        skill_id = batch.get("skill_id")
-
-        encoded_obs, skill_logits = self.encode_observation(obs, skill_id=skill_id, actions=actions, timestep=timestep)
-
-        latent_pred = self.latent_flow_head(encoded_obs)
-        action_pred = self.action_decoder(latent_pred)
-
+        images = obs.get("images", obs.get("obs_images", obs.get("observation.images")))
+        states = obs.get("states", obs.get("obs_states", obs.get("observation.state")))
+        language = obs.get("language", obs.get("task_descriptor"))
+        history = obs.get("history")
+        masks = obs.get("masks", batch.get("masks"))
+        if images is None or states is None:
+            raise KeyError("Expected explicit multimodal inputs: images, states, language, history, masks")
         return {
-            "encoded_obs": encoded_obs,
-            "latent_action_pred": latent_pred,
-            "action_pred": action_pred,
-            "skill_logits": skill_logits,
+            "images": images.float(),
+            "states": states.float(),
+            "language": None if language is None else language.float(),
+            "history": None if history is None else history.float(),
+            "masks": None if masks is None else masks.float(),
         }
 
+    def forward(
+        self,
+        images: torch.Tensor,
+        states: torch.Tensor,
+        language: Optional[torch.Tensor] = None,
+        history: Optional[torch.Tensor] = None,
+        masks: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
+        phase_labels: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Run four-layer forward pass and return intermediate diagnostics."""
+        tok = self.vision_tokenizer(images=images, states=states, language=language, history=history, masks=masks)
+        context = self.context_backbone(tok["context_tokens"])
+        fused_obs = context.mean(dim=1) + tok["fused"]
+
+        if timestep is None:
+            timestep = torch.zeros(fused_obs.size(0), dtype=torch.long, device=fused_obs.device)
+        timestep = torch.clamp(timestep.long(), 0, self.config.max_timestep - 1)
+        fused_obs = fused_obs + self.timestep_embedding(timestep)
+
+        plan = self.hierarchical_planner(fused_obs=fused_obs, phase_labels=phase_labels)
+        flow = self.flow_action_head(fused_obs=fused_obs, phase_embed=plan["phase_embed"], skill_latent=plan["skill_latent"])
+        verify = self.chunk_verifier(fused_obs=fused_obs, predicted_action=flow["action_pred"], phase_embed=plan["phase_embed"])
+
+        return {
+            **tok,
+            **plan,
+            **flow,
+            **verify,
+            "encoded_obs": fused_obs,
+        }
+
+    def predict_action(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        """Predict actions from a training/evaluation batch dictionary."""
+        inputs = self._extract_inputs(batch)
+        timestep = batch.get("timestep")
+        phase_labels = batch.get("phase_id")
+        return self.forward(**inputs, timestep=timestep, phase_labels=phase_labels)
+
     def compute_loss(self, batch: Dict[str, Any]) -> torch.Tensor:
+        """Compute imitation, flow, phase, and verifier training objectives."""
         preds = self.predict_action(batch)
         actions = self._extract_actions(batch)
         if actions is None:
             raise KeyError("compute_loss requires action/actions/target_action in batch")
 
-        latent_target = self.action_tokenizer.encode(actions) if self.config.use_latent_flow else actions
-        latent_pred = preds["latent_action_pred"] if self.config.use_latent_flow else preds["action_pred"]
+        flow_loss = F.mse_loss(preds["action_pred"], actions)
+        smoothness = (preds["action_pred"][1:] - preds["action_pred"][:-1]).pow(2).mean() if preds["action_pred"].shape[0] > 1 else 0.0
 
-        per_sample_loss = F.mse_loss(latent_pred, latent_target, reduction="none").mean(dim=-1)
+        obs_feat = preds["encoded_obs"].detach()
+        q_values = self.critic_network(torch.cat([obs_feat, actions.detach()], dim=-1)).squeeze(-1)
+        per_sample = F.mse_loss(preds["action_pred"], actions, reduction="none").mean(dim=-1)
+
+        if self.config.use_value_guided_weight:
+            weights = torch.softmax(self.config.value_weight_beta * q_values, dim=0)
+            weights = weights * weights.numel()
+            imitation_loss = (per_sample * weights.detach()).mean()
+        else:
+            imitation_loss = per_sample.mean()
+
+        verifier_targets = torch.ones_like(preds["chunk_confidence"])
+        verifier_loss = F.binary_cross_entropy(preds["chunk_confidence"], verifier_targets)
+
+        phase_labels = batch.get("phase_id")
+        if isinstance(phase_labels, torch.Tensor) and torch.all(phase_labels >= 0):
+            phase_loss = F.cross_entropy(preds["phase_logits"], phase_labels.long())
+        else:
+            phase_loss = torch.zeros((), device=actions.device)
+
+        loss = imitation_loss + 0.5 * flow_loss + 0.05 * smoothness + 0.1 * verifier_loss + 0.1 * phase_loss
 
         base_loss = None
         if self.base_policy is not None and hasattr(self.base_policy, "compute_loss"):
@@ -232,38 +375,15 @@ class PhaseQFlowPolicy(nn.Module):
                 base_loss = base_out["loss"]
             elif isinstance(base_out, torch.Tensor):
                 base_loss = base_out
-
-        obs = batch.get("obs", batch)
-        raw_obs = self._extract_obs_tensor(obs)
-        obs_feat = self.obs_encoder(raw_obs)
-        q_values = self.critic_network(torch.cat([obs_feat.detach(), actions.detach()], dim=-1)).squeeze(-1)
-
-        if self.config.use_value_guided_weight:
-            weights = torch.softmax(self.config.value_weight_beta * q_values, dim=0)
-            weights = weights * weights.numel()
-            weighted_loss = (per_sample_loss * weights.detach()).mean()
-        else:
-            weighted_loss = per_sample_loss.mean()
-
         if base_loss is not None:
             if base_loss.ndim > 0:
                 base_loss = base_loss.mean()
-            loss = weighted_loss + self.config.base_loss_weight * base_loss
-        else:
-            loss = weighted_loss
+            loss = loss + self.config.base_loss_weight * base_loss
 
         return loss
 
     def update_critic(self, obs_feat: torch.Tensor, actions: torch.Tensor, target_q: torch.Tensor) -> torch.Tensor:
+        """Update critic via MSE regression against target Q values."""
         critic_in = torch.cat([obs_feat, actions], dim=-1)
         pred_q = self.critic_network(critic_in).squeeze(-1)
         return F.mse_loss(pred_q, target_q)
-
-    def forward(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        loss = self.compute_loss(batch)
-        preds = self.predict_action(batch)
-        preds["loss"] = loss
-        return preds
-
-    def reset(self, batch_size: int) -> None:
-        _ = batch_size

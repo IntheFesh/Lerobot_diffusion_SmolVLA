@@ -1,14 +1,16 @@
-# Project Abstract: PhaseQFlow for Long-Horizon LIBERO Manipulation
+# Project Abstract: PhaseQFlow++ for Long-Horizon LIBERO Manipulation
 
 ## Summary
 
 This project builds a simulation-first pipeline for embodied policy research on
 LeRobot and LIBERO. Starting from a diffusion-policy reproduction baseline, it
-introduces **PhaseQFlow**, a generative action-chunk policy that combines:
+introduces **PhaseQFlow++**, a four-layer multimodal generative chunk policy
+that combines:
 
-1. **Phase-aware conditioning** for trajectory progress awareness.
-2. **Quality-weighted imitation learning** for robust low-data training.
-3. **Flow-matching objectives** for efficient generation and scalable inference.
+1. **Multimodal tokenization with asymmetric cross-attention**.
+2. **Hierarchical latent phase/skill planning**.
+3. **Phase-conditioned flow action generation**.
+4. **Closed-loop verification and replanning**.
 
 The implementation follows LeRobot plugin conventions so the policy can be
 trained and evaluated through standard `lerobot-train` and `lerobot-eval`
@@ -16,36 +18,55 @@ workflows.
 
 ## Technical contributions
 
-### 1) Phase-aware conditioning
+### 1) Multimodal tokenization with control-centric visual fusion
 
-Trajectory progress is represented as a normalized ratio:
+At each control step, observations are modeled as:
 
-`phase_progress = frame_index / episode_length`
+`x_t = {V_t, S_t, L, H_t}`
 
-Progress values are discretized into `K` phase bins and embedded with a
-learnable phase embedding table. The model uses this embedding as an additional
-conditioning signal, enabling different behavior modes for early/mid/late task
-stages.
+where `V_t` is visual tokens, `S_t` is robot state, `L` is language/task token,
+and `H_t` is history. Instead of early-fusion concatenation, the policy uses
+asymmetric cross-attention with state/history queries over vision keys/values,
+plus an uncertainty gate that adaptively weighs vision versus proprioception.
 
-### 2) Quality-weighted imitation learning
+### 2) Hierarchical latent planner
 
-Each training sample receives a quality weight derived from motion smoothness
-(e.g., jerk-based metrics). The loss is scaled by this weight so cleaner,
-consistent expert segments contribute more strongly to optimization.
+Phase is represented as mixed latent variables:
 
-This design aims to improve convergence stability and final success rates,
-especially when demonstrations are limited or heterogeneous.
+- Discrete phase: `z_t^(p) in {1, ..., K}`
+- Continuous skill style/subgoal: `z_t^(s) in R^d`
 
-### 3) Flow matching policy objective
+This turns phase into a true high-level control variable for chunk structure,
+action mode, and replanning timing, instead of a passive appended feature.
 
-Instead of relying only on diffusion denoising, PhaseQFlow uses a flow-matching
-objective for action-chunk generation. This supports faster and more stable
-sampling at inference time and aligns with recent trends in generative robotics.
+### 3) Conditional flow action generation
+
+Given `x_<=t` and latent planner outputs, the action head integrates a
+phase-conditioned continuous flow field and decodes final latent state into an
+action chunk. This keeps multimodal generation benefits while remaining lighter
+than large diffusion stacks.
+
+### 4) Closed-loop chunk verification
+
+A lightweight verifier predicts chunk confidence and phase drift during
+execution. If mismatch is detected, it triggers early chunk truncation and
+replanning, upgrading the method from open-loop chunk prediction to closed-loop
+planning-and-verification.
+
+## Training strategy
+
+The project now uses a four-stage curriculum:
+
+1. Multimodal alignment pretraining.
+2. Phase/skill latent learning (manual, latent-only, or hybrid weak supervision).
+3. Flow action imitation with structure-aware regularization.
+4. Closed-loop correction fine-tuning with rollout mismatch handling.
 
 ## Engineering outcomes
 
 - Reproducible repository structure with local and cloud launch scripts.
 - Clear separation between policy package and experiment operations.
+- Explicit multimodal processor-to-policy data path (`images/states/language/history/masks`).
 - Utility scripts for dataset diagnostics, checkpoint export, evaluation, and
   inference latency benchmarking.
 - Extension path toward SmolVLA LoRA adaptation and future online RL integration.

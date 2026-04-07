@@ -14,6 +14,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    """Lazily import heavy runtime modules to keep package import lightweight."""
     if name == "PhaseQFlowPolicy":
         from .modeling_phaseqflow import PhaseQFlowPolicy
 

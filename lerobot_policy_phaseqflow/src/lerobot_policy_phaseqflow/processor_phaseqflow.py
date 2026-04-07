@@ -20,22 +20,20 @@ class ProcessorConfig:
 
 
 class PhaseQFlowProcessor:
-    """Prepare tensors and lightweight augmentations.
-
-    This processor intentionally does not compute temporal phase ids or
-    jerk-based quality weights. Skill ids and value-guided weights are learned
-    in the model through the skill encoder and critic.
-    """
+    """Prepare explicit multimodal tensors for the 4-layer policy forward path."""
 
     def __init__(self, config: ProcessorConfig) -> None:
+        """Initialize image augmentation and processor configuration."""
         self.config = config
         self.image_aug = T.RandAugment(num_ops=config.image_randaugment_n, magnitude=config.image_randaugment_m)
 
     @staticmethod
     def _to_tensor(x: Any) -> torch.Tensor:
+        """Convert input data into a torch tensor without copying when possible."""
         return x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
 
     def _augment_images(self, images_tensor: torch.Tensor) -> torch.Tensor:
+        """Apply RandAugment to batched image tensors when format matches BCHW."""
         if images_tensor.ndim != 4:
             return images_tensor
         out = []
@@ -48,32 +46,54 @@ class PhaseQFlowProcessor:
         return torch.stack(out, dim=0)
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        """Build explicit multimodal batch payload for policy forward signatures."""
         obs_images: List[torch.Tensor] = []
         obs_states: List[torch.Tensor] = []
+        language: List[torch.Tensor] = []
+        history: List[torch.Tensor] = []
+        masks: List[torch.Tensor] = []
 
         for sample in batch:
-            images = sample.get("observation.images.image", sample.get("observation.images"))
-            states = sample.get("observation.state", sample.get("state"))
+            images = sample.get("observation.images.image", sample.get("observation.images", sample.get("images")))
+            states = sample.get("observation.state", sample.get("state", sample.get("states")))
+            lang = sample.get("instruction", sample.get("task_descriptor", sample.get("language")))
+            hist = sample.get("observation.history", sample.get("history", states))
+            m = sample.get("observation.mask", sample.get("mask", 1.0))
             if images is None or states is None:
-                raise KeyError("Each sample must include observation images and state")
+                raise KeyError("Each sample must include observation images and states")
 
             obs_images.append(self._to_tensor(images).float())
             obs_states.append(self._to_tensor(states).float())
+            language.append(self._to_tensor(0.0 if lang is None else lang).float())
+            history.append(self._to_tensor(hist).float())
+            masks.append(self._to_tensor(m).float())
 
-        obs_images_t = torch.stack(obs_images, dim=0)
+        obs_images_t = self._augment_images(torch.stack(obs_images, dim=0))
         obs_states_t = torch.stack(obs_states, dim=0)
-
-        obs_images_t = self._augment_images(obs_images_t)
         if self.config.state_noise_std > 0:
             obs_states_t = obs_states_t + torch.randn_like(obs_states_t) * self.config.state_noise_std
+
+        language_t = torch.stack(language, dim=0)
+        history_t = torch.stack(history, dim=0)
+        masks_t = torch.stack(masks, dim=0)
 
         batch_size = obs_images_t.shape[0]
         skill_id = torch.full((batch_size,), -1, dtype=torch.long)
         sample_weight = torch.ones(batch_size, dtype=torch.float32)
 
         return {
+            "obs": {
+                "images": obs_images_t,
+                "states": obs_states_t,
+                "language": language_t,
+                "history": history_t,
+                "masks": masks_t,
+            },
             "obs_images": obs_images_t,
             "obs_states": obs_states_t,
+            "language": language_t,
+            "history": history_t,
+            "masks": masks_t,
             "skill_id": skill_id,
             "sample_weight": sample_weight,
         }

@@ -35,16 +35,19 @@ class OnlineSkillState:
     _weight_sum: float = 0.0
 
     def __post_init__(self) -> None:
+        """Reset bounded buffers after dataclass initialization."""
         self._action_buffer = deque(maxlen=self.action_buffer_maxlen)
         self._weight_buffer = deque(maxlen=self.action_buffer_maxlen)
         self._weight_sum = 0.0
 
     def reset(self) -> None:
+        """Clear all online statistics and buffered actions."""
         self._action_buffer.clear()
         self._weight_buffer.clear()
         self._weight_sum = 0.0
 
     def _append_weight(self, weight: float) -> None:
+        """Push one weight into the running buffer and maintain its sum."""
         if len(self._weight_buffer) == self._weight_buffer.maxlen:
             oldest = self._weight_buffer[0]
             self._weight_sum -= oldest
@@ -52,6 +55,7 @@ class OnlineSkillState:
         self._weight_sum += weight
 
     def step(self, action_t: np.ndarray, skill_logits_t: np.ndarray, q_value_t: float) -> tuple[int, float]:
+        """Process one timestep and return `(skill_id, normalized_weight)`."""
         self._action_buffer.append(np.asarray(action_t, dtype=float))
 
         skill_id = compute_skill_id_from_logits(skill_logits_t)
