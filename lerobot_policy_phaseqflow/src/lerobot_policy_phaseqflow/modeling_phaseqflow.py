@@ -29,6 +29,105 @@ class SkillVQEncoder(nn.Module):
         return skill_id, probs, logits
 
 
+'''
+resnet18 - VisionTokenizer
+from torchvision.models import resnet18
+from typing import Dict, Optional
+
+class VisionTokenizer(nn.Module):
+    def __init__(self, config: object) -> None:
+        super().__init__()
+        self.config = config
+        self.spatial_grid = getattr(config, "spatial_grid_size", 4)
+        resnet = resnet18(weights=None)
+        self.vision_encoder = nn.Sequential(*list(resnet.children())[:-2])
+        self.vision_pool = nn.AdaptiveAvgPool2d((self.spatial_grid, self.spatial_grid))
+        self.vision_proj = nn.Sequential(
+            nn.Conv2d(512, config.vision_token_dim, kernel_size=1, bias=False),
+            nn.GroupNorm(num_groups=32, num_channels=config.vision_token_dim),
+            nn.GELU()
+        )
+
+        self.vision_adapter = nn.Linear(config.vision_token_dim, config.fusion_hidden_dim)
+        self.state_tokenizer = nn.LazyLinear(config.fusion_hidden_dim)
+        self.language_tokenizer = nn.LazyLinear(config.fusion_hidden_dim)
+        self.history_tokenizer = nn.LazyLinear(config.fusion_hidden_dim)
+
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=config.fusion_hidden_dim,
+            num_heads=config.cross_attn_heads,
+            dropout=config.cross_attn_dropout,
+            batch_first=True,
+        )
+
+        self.uncertainty_gate = nn.Sequential(
+            nn.Linear(config.fusion_hidden_dim * 2, config.fusion_hidden_dim),
+            nn.SiLU(),
+            nn.Linear(config.fusion_hidden_dim, 1),
+        )
+
+    def maybe_freeze_vision(self) -> None:
+        if not getattr(self.config, "freeze_vision_encoder", False):
+            return
+        for p in self.vision_encoder.parameters():
+            p.requires_grad = False
+        for p in self.vision_pool.parameters():
+            p.requires_grad = False
+        for p in self.vision_proj.parameters():
+            p.requires_grad = False
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        states: torch.Tensor,
+        language: Optional[torch.Tensor] = None,
+        history: Optional[torch.Tensor] = None,
+        masks: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        del masks
+        if states.ndim > 2:
+            states = states.flatten(start_dim=1)
+
+        B = images.shape[0]
+        feat = self.vision_encoder(images)                            # [B, 512, H/32, W/32]
+        feat = self.vision_pool(feat)                                 # [B, 512, G, G]
+        feat = self.vision_proj(feat)                                 # [B, token_dim, G, G]
+        feat = feat.permute(0, 2, 3, 1).reshape(B, -1, self.config.vision_token_dim) # [B, G², token_dim]
+        vision_tokens = self.vision_adapter(feat)                     # [B, G², fusion_hidden_dim]
+
+        state_tokens = self.state_tokenizer(states).unsqueeze(1)
+        if language is None:
+            language = torch.zeros_like(states[:, :1])
+        if language.ndim > 2:
+            language = language.flatten(start_dim=1)
+        language_tokens = self.language_tokenizer(language).unsqueeze(1)
+        if history is None:
+            history = states
+        if history.ndim > 2:
+            history = history.flatten(start_dim=1)
+        history_tokens = self.history_tokenizer(history).unsqueeze(1)
+        query_tokens = torch.cat([state_tokens, history_tokens], dim=1)
+        attended, _ = self.cross_attn(query=query_tokens, key=vision_tokens, value=vision_tokens)
+        attended_summary = attended.mean(dim=1)
+        proprio_summary = torch.cat([state_tokens, history_tokens], dim=1).mean(dim=1)
+
+        gate = torch.sigmoid(self.uncertainty_gate(torch.cat([attended_summary, proprio_summary], dim=-1)))
+        fused = gate * attended_summary + (1.0 - gate) * proprio_summary
+        vision_tokens_pooled = vision_tokens.mean(dim=1, keepdim=True)
+        context_tokens = torch.cat([state_tokens, history_tokens, language_tokens, vision_tokens_pooled], dim=1)
+
+        return {
+            "fused": fused,
+            "context_tokens": context_tokens,
+            "vision_tokens": vision_tokens,
+            "state_tokens": state_tokens,
+            "language_tokens": language_tokens,
+            "history_tokens": history_tokens,
+            "uncertainty_gate": gate.squeeze(-1),
+        }
+        '''
+
+
 class VisionTokenizer(nn.Module):
     """Multimodal tokenization with asymmetric cross-attention + uncertainty gate."""
 
