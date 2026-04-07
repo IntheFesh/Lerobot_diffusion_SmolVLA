@@ -10,46 +10,56 @@ from typing import Any, Optional
 
 @dataclass
 class PhaseQFlowConfig:
-    """Lightweight config with backward-compatible fields."""
+    """Config for four-layer PhaseQFlow++ architecture.
 
-    # Legacy switches
+    The defaults remain lightweight for single-GPU experimentation.
+    """
+
+    # Legacy switches kept for compatibility
     num_phases: int = 4
     phase_embedding_dim: int = 32
 
-    # 1) Learned skill phase
-    num_skills: int = 16
-    use_vq_phase: bool = True
-    skill_embedding_dim: int = 32
-    vq_commitment_cost: float = 0.25
+    # Multimodal tokenizer
+    vision_token_dim: int = 256
+    state_token_dim: int = 128
+    language_token_dim: int = 128
+    history_token_dim: int = 128
+    fusion_hidden_dim: int = 256
+    freeze_vision_encoder: bool = True
+    use_vision_adapter: bool = True
 
-    # 2) Value-guided weighting
-    use_quality_weight: bool = True
-    use_value_guided_weight: bool = True
-    value_weight_beta: float = 1.0
-    quality_weight_min: float = 0.5
-    quality_weight_max: float = 1.0
+    # Asymmetric cross attention
+    cross_attn_heads: int = 8
+    cross_attn_dropout: float = 0.0
 
-    # Learned skills (VQ/Gumbel)
+    # Hierarchical latent planner
     num_skills: int = 16
     use_vq_phase: bool = True
     skill_embedding_dim: int = 32
     gumbel_temperature: float = 1.0
+    continuous_skill_dim: int = 32
+    weak_phase_supervision_mode: str = "hybrid"  # manual|latent|hybrid
 
-    # Value-guided regression
+    # Value-guided weighting
     use_value_guided_weight: bool = True
     value_weight_beta: float = 2.0
     critic_hidden_dim: int = 256
 
-    # Latent flow
+    # Conditional flow
     latent_dim: int = 32
     use_latent_flow: bool = True
+    flow_steps: int = 4
+
+    # Closed-loop verifier
+    verifier_hidden_dim: int = 128
+    replan_confidence_threshold: float = 0.5
 
     # Model size / lightness knobs
     action_dim: int = 16
     max_timestep: int = 2048
     base_loss_weight: float = 0.25
 
-    # DiT backbone
+    # Transformer backbone
     backbone_type: str = "dit"
     dit_hidden_dim: int = 256
     dit_num_layers: int = 4
