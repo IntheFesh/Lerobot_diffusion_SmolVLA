@@ -7,9 +7,9 @@ This repository is a research-and-engineering template for training and evaluati
 
 The core contribution is **PhaseQFlow++**: a four-layer multimodal hierarchical
 policy that extends the LeRobot policy plugin architecture.
-The repository also includes baseline diffusion configuration, SmolVLA LoRA
-fine-tuning examples, and utility scripts for dataset inspection, evaluation,
-latency benchmarking, and checkpoint export.
+The repository also includes PhaseQFlow-aligned utility scripts for dataset inspection,
+evaluation, latency benchmarking, and checkpoint export. Legacy baseline scripts are
+retained under `configs/*/legacy/` for reference.
 
 ## Project goals
 
@@ -124,10 +124,9 @@ python scripts/export_checkpoint.py \
 
 ## Baselines and extensions
 
-- Diffusion baseline (local): `configs/local/diffusion_baseline_local.sh`
-- SmolVLA LoRA fine-tuning (local): `configs/local/smolvla_lora_local.sh`
+- PhaseQFlow local training: `configs/local/phaseqflow_local.sh`
 - PhaseQFlow cloud training: `configs/cloud/phaseqflow_cloud_accelerate.sh`
-- SmolVLA LoRA cloud training: `configs/cloud/smolvla_lora_cloud_accelerate.sh`
+- Legacy baseline scripts: `configs/local/legacy/` and `configs/cloud/legacy/`
 
 ## Documentation map
 

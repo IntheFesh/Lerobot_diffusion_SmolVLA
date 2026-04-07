@@ -1,11 +1,9 @@
 #!/usr/bin/env python
 """
-benchmark_latency.py
-===================
+Benchmark inference latency for PhaseQFlow policies.
 
-Measure inference latency of a trained policy. The script loads a
-pretrained policy checkpoint and repeatedly calls its forward/predict
-path on dummy inputs to estimate average execution time per call.
+The script loads a pretrained policy checkpoint and repeatedly calls inference
+on a multimodal dummy observation shaped like PhaseQFlow processor output.
 """
 
 import argparse
@@ -51,8 +49,13 @@ def benchmark(policy: Any, n_iters: int) -> int:
         print("n_iters must be > 0")
         return 1
 
+    # Matches the explicit multimodal keys documented by PhaseQFlow processors.
     dummy_obs = {
-        "observation": np.zeros((1, 3, 84, 84), dtype=np.float32),
+        "obs.images": np.zeros((1, 3, 84, 84), dtype=np.float32),
+        "obs.states": np.zeros((1, 16), dtype=np.float32),
+        "obs.language": np.zeros((1, 8), dtype=np.float32),
+        "obs.history": np.zeros((1, 16), dtype=np.float32),
+        "obs.masks": np.ones((1, 1), dtype=np.float32),
     }
 
     try:
@@ -87,7 +90,7 @@ def benchmark(policy: Any, n_iters: int) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Benchmark policy inference latency")
+    parser = argparse.ArgumentParser(description="Benchmark PhaseQFlow policy inference latency")
 
     parser.add_argument("--policy-path", dest="policy_path", type=str, default=None, help="Path to pretrained policy directory")
     parser.add_argument("--n-iters", dest="n_iters", type=int, default=100, help="Number of benchmark iterations")
